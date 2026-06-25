@@ -1,2 +1,4 @@
-# book-train-reading-energy
-book-train-reading-energy
+# 布可列車多功能圖書與閱讀能量管理網站
+
+布可列車多功能圖書與閱讀能量管理網站：Supabase Auth + Postgres，含PDF/Excel匯入與三角色介面（管理員/老師/學生），RWD、表格搜尋排序、報表匯出。
+    
