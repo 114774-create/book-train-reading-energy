@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import WelcomeBanner from "@/components/WelcomeBanner";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -51,6 +52,7 @@ export default function TeacherDashboard() {
 
   return (
     <div className="p-6 space-y-4">
+      <WelcomeBanner roleLabel="老師專區" title="今天也一起帶孩子閱讀吧 📚" subtitle="你可以查看本班書單、借閱狀態，並提醒同學準時歸還。" emoji="📚" />
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-xl font-extrabold tracking-tight">班級總覽 🚂</h2>

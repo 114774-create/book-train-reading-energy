@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/customAuth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import WelcomeBanner from "@/components/WelcomeBanner";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { toast } from "sonner";
@@ -63,20 +64,7 @@ export default function StudentDashboard() {
 
   return (
     <div className="p-6 space-y-4">
-      <Card className="overflow-hidden">
-        <div className="relative p-6 md:p-7 bg-[radial-gradient(circle_at_20%_20%,rgba(251,191,36,0.35),transparent_45%),radial-gradient(circle_at_80%_0%,rgba(34,211,238,0.35),transparent_45%),radial-gradient(circle_at_70%_90%,rgba(167,139,250,0.35),transparent_45%)]">
-          <div className="flex items-center justify-between gap-6 flex-wrap">
-            <div>
-              <div className="text-sm font-bold text-muted-foreground">🚂 布可列車</div>
-              <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight mt-1">歡迎回來！一起來借書吧 📚</h2>
-              <p className="text-sm text-muted-foreground mt-2">你可以在下面查看本班書單，並點選借閱/歸還。</p>
-            </div>
-            <div className="shrink-0">
-              <div className="h-16 w-16 md:h-20 md:w-20 rounded-3xl bg-white/70 border shadow-[0_18px_45px_-28px_rgba(245,158,11,0.35)] flex items-center justify-center text-4xl">⭐</div>
-            </div>
-          </div>
-        </div>
-      </Card>
+      <WelcomeBanner roleLabel="學生專區" subtitle="你可以在下面查看本班書單，並點選借閱/歸還。" emoji="⭐" />
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <h2 className="text-xl font-semibold">學生｜借閱/歸還</h2>

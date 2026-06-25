@@ -12,6 +12,7 @@ import type { AppUserRow, ClassCode, UserRole } from "@/lib/types";
 import { getSession } from "@/lib/customAuth";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
+import WelcomeBanner from "@/components/WelcomeBanner";
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -66,6 +67,9 @@ export default function AdminDashboard() {
   const [newClass, setNewClass] = useState<ClassCode>("101");
   const [newPassword, setNewPassword] = useState("");
 
+  // 學生名單 Excel 批次匯入
+  const [studentExcel, setStudentExcel] = useState<File | null>(null);
+
   const [promoteFrom, setPromoteFrom] = useState<ClassCode>("101");
   const [promoteTo, setPromoteTo] = useState<ClassCode>("201");
 
@@ -113,6 +117,7 @@ export default function AdminDashboard() {
     }
   }
 
+  // 月報 Excel / 學生名單 Excel 都會用到
   function normalizeHeader(s: string) {
     return s.replace(/\s+/g, "").trim();
   }
@@ -207,6 +212,66 @@ export default function AdminDashboard() {
     } catch (e: any) {
       toast.error("讀取人事清單失敗：" + String(e?.message ?? e));
     } finally {
+      setLoading(false);
+    }
+  }
+
+  async function importStudentsExcel() {
+    if (!studentExcel) return toast.error("請選擇學生名單 Excel 檔案");
+
+    const t = toast.loading("解析並匯入學生名單中…");
+    setLoading(true);
+    try {
+      const buf = await studentExcel.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buf), { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      if (!ws) throw new Error("找不到工作表");
+
+      const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
+      if (!aoa.length) throw new Error("Excel 是空的");
+
+      const header = (aoa[0] ?? []).map((h) => normalizeHeader(String(h ?? "")));
+      const idxNo = header.findIndex((h) => h === "學號");
+      const idxName = header.findIndex((h) => h === "姓名");
+      if (idxNo < 0 || idxName < 0) throw new Error("第一列標題必須包含：學號、姓名");
+
+      const rows = aoa
+        .slice(1)
+        .filter((r) => r && r.length)
+        .map((r) => {
+          const studentNo = String(r[idxNo] ?? "").trim();
+          const name = String(r[idxName] ?? "").trim();
+          if (!studentNo || !name) return null;
+          const classId = studentNo.slice(0, 3);
+          return {
+            account: studentNo,
+            name,
+            role: "student",
+            class_id: classId,
+            password_hash: null,
+          };
+        })
+        .filter(Boolean) as any[];
+
+      if (!rows.length) throw new Error("沒有可匯入的資料列");
+
+      // 分批 upsert 避免一次太大
+      const chunkSize = 500;
+      let imported = 0;
+      for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize);
+        const { error } = await supabase.from("app_users").upsert(chunk, { onConflict: "account" });
+        if (error) throw error;
+        imported += chunk.length;
+      }
+
+      toast.success(`成功匯入 ${imported} 筆學生資料！`);
+      setStudentExcel(null);
+      await loadUsers();
+    } catch (e: any) {
+      toast.error("匯入失敗：" + String(e?.message ?? e));
+    } finally {
+      toast.dismiss(t);
       setLoading(false);
     }
   }
@@ -355,6 +420,8 @@ export default function AdminDashboard() {
 
   return (
     <div className="p-6 space-y-4">
+      <WelcomeBanner roleLabel="管理員專區" title="後台管理站 🛠️🚂" subtitle="匯入書箱、匯入月報、管理師生與匯出報表。" emoji="🛠️" />
+
       <div>
         <h2 className="text-xl font-extrabold tracking-tight">匯入與管理 🛠️</h2>
         <p className="text-sm text-muted-foreground mt-1">核心功能：書箱 PDF 智慧匯入、每月 Excel 報表匯入比對、人事管理、排行榜與匯出</p>
@@ -518,6 +585,21 @@ export default function AdminDashboard() {
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
+                </div>
+              </div>
+
+              <div className="rounded-3xl border p-5 bg-emerald-50/40 shadow-[0_18px_45px_-28px_rgba(16,185,129,0.25)]">
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div>
+                    <div className="font-extrabold text-lg">🧑‍🎓 學生名單 Excel 批次匯入</div>
+                    <div className="text-sm text-muted-foreground mt-1">請上傳學生名單 Excel。表格第一列必須包含標題：『學號』、『姓名』。</div>
+                  </div>
+                  <div className="h-12 w-12 rounded-2xl bg-white/70 border flex items-center justify-center shadow-[0_14px_28px_-20px_rgba(16,185,129,0.35)] text-2xl">📥</div>
+                </div>
+
+                <div className="mt-4 flex items-center gap-3 flex-wrap">
+                  <Input type="file" accept=".xlsx,.xls" onChange={(e) => setStudentExcel(e.target.files?.[0] ?? null)} />
+                  <Button variant="outline" onClick={importStudentsExcel} disabled={loading || !studentExcel}>開始匯入</Button>
                 </div>
               </div>
 
