@@ -9,8 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { toast } from "sonner";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
 import type { AppUserRow, ClassCode, UserRole } from "@/lib/types";
-import { adminApi } from "@/lib/adminApi";
 import { getSession } from "@/lib/customAuth";
+import { supabase } from "@/lib/supabase";
+import * as XLSX from "xlsx";
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -108,28 +109,78 @@ export default function AdminDashboard() {
     }
   }
 
+  function normalizeHeader(s: string) {
+    return s.replace(/\s+/g, "").trim();
+  }
+
+  function parseMonthlyExcel(file: File): Promise<{ year_month: string; rows: any[] }> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error);
+      reader.onload = () => {
+        try {
+          const data = new Uint8Array(reader.result as ArrayBuffer);
+          const wb = XLSX.read(data, { type: "array" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          if (!ws) throw new Error("no_sheet");
+
+          // 先用 header:1 讀取第一列標題
+          const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
+          if (!aoa.length) throw new Error("empty");
+
+          const headerRow = (aoa[0] ?? []).map((h) => normalizeHeader(String(h ?? "")));
+
+          const idxStudent = headerRow.findIndex((h) => ["學號", "学生编号", "studentno", "student_no"].includes(h.toLowerCase()) || h === "學號");
+          const idxName = headerRow.findIndex((h) => ["姓名", "学生姓名", "name"].includes(h.toLowerCase()) || h === "姓名");
+          const idxEnergy = headerRow.findIndex((h) => h.includes("能量") || h.toLowerCase().includes("energy"));
+          const idxBooks = headerRow.findIndex((h) => h.includes("本數") || h.includes("本月挖掘本數") || h.toLowerCase().includes("books"));
+
+          if (idxStudent < 0 || idxName < 0 || idxEnergy < 0 || idxBooks < 0) {
+            throw new Error("bad_header");
+          }
+
+          const rows = aoa
+            .slice(1)
+            .filter((r) => r && r.length)
+            .map((r) => {
+              const student_no = String(r[idxStudent] ?? "").trim();
+              const name = String(r[idxName] ?? "").trim();
+              const energy = Number(r[idxEnergy] ?? 0) || 0;
+              const books = Number(r[idxBooks] ?? 0) || 0;
+              return { student_no, name, energy, books };
+            })
+            .filter((r) => /^\d{5}$/.test(r.student_no) && r.name);
+
+          resolve({ year_month: (yearMonth || ymDefault).trim(), rows });
+        } catch (e) {
+          reject(e);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
   async function importExcel() {
     if (!excel) return toast.error("請選擇 Excel");
+    const ym = (yearMonth || ymDefault).trim();
+    if (!/^\d{4}-\d{2}$/.test(ym)) return toast.error("月份格式需為 YYYY-MM");
+
     setLoading(true);
-    const t = toast.loading("匯入 Excel 月報中…");
+    const t = toast.loading("解析 Excel 並匯入中…");
     try {
-      const excel_base64 = await fileToBase64(excel);
-      const sess = getSession();
-      if (!sess) throw new Error("not_logged_in");
-      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/import-reading-excel`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          authorization: `Bearer ${sess.token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ excel_base64, year_month: (yearMonth || ymDefault).trim() }),
+      const parsed = await parseMonthlyExcel(excel);
+      if (!parsed.rows.length) throw new Error("沒有可匯入的資料列");
+
+      // 走 DB RPC：不使用 Edge Function
+      const { data, error } = await supabase.rpc("rpc_import_reading_month", {
+        p_year_month: ym,
+        p_rows: parsed.rows,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || res.statusText);
-      setMissing(data.missing_in_db ?? []);
-      toast.success(`完成：處理 ${data.processed} 筆（${data.year_month}）`);
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "import_failed");
+
+      setMissing(data.missing_in_report ?? []);
+      toast.success(`完成：處理 ${data.processed} 筆（${ym}）`);
     } catch (e: any) {
       toast.error("匯入失敗：" + String(e?.message ?? e));
     } finally {
@@ -141,8 +192,14 @@ export default function AdminDashboard() {
   async function loadUsers() {
     setLoading(true);
     try {
-      const r = await adminApi<{ ok: boolean; users: AppUserRow[] }>("/users");
-      setUsers(r.users ?? []);
+      const { data, error } = await supabase
+        .from("app_users")
+        .select("account, role, name, class_id")
+        .order("role")
+        .order("class_id")
+        .order("account");
+      if (error) throw error;
+      setUsers((data as any) ?? []);
     } catch (e: any) {
       toast.error("讀取人事清單失敗：" + String(e?.message ?? e));
     } finally {
@@ -160,16 +217,16 @@ export default function AdminDashboard() {
 
     const t = toast.loading("新增中…");
     try {
-      await adminApi("/users", {
-        method: "POST",
-        body: JSON.stringify({
-          account,
-          role: newRole,
-          name,
-          class_id: newRole === "admin" ? null : newClass,
-          password: newRole === "student" ? null : newPassword,
-        }),
-      });
+      const row: any = {
+        account,
+        role: newRole,
+        name,
+        class_id: newRole === "admin" ? null : newClass,
+        // 依你目前 DB 設計：password_hash 欄位存放明文（之後若要加密，再統一調整）
+        password_hash: newRole === "student" ? null : newPassword,
+      };
+      const { error } = await supabase.from("app_users").insert(row);
+      if (error) throw error;
       toast.success("新增完成");
       setCreateOpen(false);
       setNewAccount("");
@@ -187,7 +244,8 @@ export default function AdminDashboard() {
     if (!confirm(`確定移除帳號 ${account}？\n（建議用於轉校/畢業）`)) return;
     const t = toast.loading("移除中…");
     try {
-      await adminApi(`/users/${encodeURIComponent(account)}`, { method: "DELETE" });
+      const { error } = await supabase.from("app_users").delete().eq("account", account);
+      if (error) throw error;
       toast.success("已移除");
       loadUsers();
     } catch (e: any) {
@@ -202,11 +260,14 @@ export default function AdminDashboard() {
     if (!confirm(`確定將 ${promoteFrom} 的學生批次改為 ${promoteTo}？`)) return;
     const t = toast.loading("批次升年級中…");
     try {
-      const r = await adminApi<{ ok: boolean; updated: number }>("/students/promote", {
-        method: "POST",
-        body: JSON.stringify({ from: promoteFrom, to: promoteTo }),
-      });
-      toast.success(`完成：更新 ${r.updated} 筆`);
+      const { data, error } = await supabase
+        .from("app_users")
+        .update({ class_id: promoteTo })
+        .eq("role", "student")
+        .eq("class_id", promoteFrom)
+        .select("account");
+      if (error) throw error;
+      toast.success(`完成：更新 ${(data ?? []).length} 筆`);
       loadUsers();
     } catch (e: any) {
       toast.error("批次升年級失敗：" + String(e?.message ?? e));
@@ -220,8 +281,22 @@ export default function AdminDashboard() {
     if (!/^\d{4}-\d{2}$/.test(ym)) return toast.error("月份格式需為 YYYY-MM");
     setLoading(true);
     try {
-      const r = await adminApi<any>(`/leaderboard?year_month=${encodeURIComponent(ym)}`);
-      setLeaderboard(r);
+      // 直接查 DB monthly 表（需配合你在 Supabase SQL Editor 建立 reading_monthly + 匯入 RPC）
+      const classes: any = {};
+      for (const c of CLASS_CODES) {
+        const { data, error } = await supabase
+          .from("reading_monthly")
+          .select("student_no, name, energy, books")
+          .eq("year_month", ym)
+          .eq("class_id", c)
+          .gte("books", 2)
+          .order("energy", { ascending: false })
+          .order("books", { ascending: false })
+          .limit(5);
+        if (error) throw error;
+        classes[c] = data ?? [];
+      }
+      setLeaderboard({ ok: true, year_month: ym, classes });
     } catch (e: any) {
       toast.error("讀取排行榜失敗：" + String(e?.message ?? e));
     } finally {
@@ -570,9 +645,24 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
 
     setLoading(true);
     try {
-      const r = await adminApi<any>(`/export/semester?year_month=${encodeURIComponent(y)}`);
-      setRows(r.rows ?? []);
-      toast.success(`已載入 ${r.rows?.length ?? 0} 筆`);
+      // 直接查 app_users + reading_totals（需在 Supabase 建好 reading_totals）
+      const { data, error } = await supabase
+        .from("app_users")
+        .select("account,name,class_id,reading_totals(total_energy,total_books)")
+        .eq("role", "student")
+        .order("class_id")
+        .order("account");
+      if (error) throw error;
+      const out = (data ?? []).map((r: any) => ({
+        student_no: r.account,
+        account: r.account,
+        name: r.name,
+        class_id: r.class_id,
+        total_energy: r.reading_totals?.total_energy ?? 0,
+        total_books: r.reading_totals?.total_books ?? 0,
+      }));
+      setRows(out);
+      toast.success(`已載入 ${out.length} 筆`);
     } catch (e: any) {
       toast.error("載入匯出資料失敗：" + String(e?.message ?? e));
     } finally {

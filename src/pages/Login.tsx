@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/customAuth";
+import { supabase } from "@/lib/supabase";
 import { useAuth } from "@/contexts/AuthContext";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -27,26 +28,47 @@ export default function LoginPage({ onDone }: LoginPageProps) {
 
   const [teachers, setTeachers] = useState<TeacherOption[]>([]);
 
-  // 從資料庫抓老師名單（後端回傳已遮名 display）
+  function maskName(name: string) {
+    const s = name.trim();
+    if (!s) return "";
+    if (s.length === 1) return s;
+    if (s.length === 2) return s[0] + "O";
+    return s[0] + "O" + s[s.length - 1];
+  }
+
+  // 老師名單：直接從 app_users 撈取並在前端遮名（不依賴 Edge Function）
   useEffect(() => {
-    api<{ ok: boolean; teachers: TeacherOption[] }>("/teachers")
-      .then((r) => setTeachers(r.teachers))
-      .catch(() => setTeachers([]));
+    let alive = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase.from("app_users").select("account,name").eq("role", "teacher").order("account");
+        if (error) throw error;
+        const opts = (data ?? []).map((t: any) => ({ account: t.account, display: maskName(String(t.name ?? "")) }));
+        if (alive) setTeachers(opts);
+      } catch {
+        if (alive) setTeachers([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // 不使用 Supabase Auth；改走 custom-auth Edge Function
+  // 不使用 Supabase Auth；老師/學生仍沿用既有 custom-auth；管理員改用 DB RPC
 
   async function signInAdmin() {
     if (!adminPassword) return toast.error("請輸入密碼");
     setLoading(true);
     const t = toast.loading("登入中…");
     try {
-      const r = await api<{ ok: boolean; token: string; user: any }>("/login/admin", {
-        method: "POST",
-        body: JSON.stringify({ password: adminPassword }),
-      });
+      // 改用 Supabase DB RPC：不需要 Edge Function、不需要 JWT。
+      // 注意：RPC 會在 DB 端比對 app_users(account='admin') 的 password_hash（目前存明文）。
+      const { data, error } = await supabase.rpc("rpc_login_admin", { p_password: adminPassword });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "login_failed");
+
       const { setSession } = await import("@/lib/customAuth");
-      const next = { token: r.token, user: r.user };
+      const next = { token: `local-rpc:${Date.now()}`, user: data.user };
       setSession(next);
       auth.set(next);
       toast.success("管理員登入成功");
