@@ -28,3 +28,14 @@ export interface ReadingTotals {
   total_books: number;
   updated_at: string;
 }
+
+export interface AppUserRow {
+  account: string;
+  role: UserRole;
+  name: string;
+  class_id: ClassCode | null;
+  // student 專用：5碼學號（通常等於 account）
+  student_no?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

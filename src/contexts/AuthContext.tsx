@@ -1,6 +1,10 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { api, getSession, setSession, type SessionState, type SessionUser } from "@/lib/customAuth";
 
+function isLocalRpcSession(s: SessionState) {
+  return s.token?.startsWith("local-rpc:");
+}
+
 interface AuthCtx {
   loading: boolean;
   session: SessionState | null;
@@ -26,10 +30,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       try {
-        const r = await api<{ ok: boolean; user: SessionUser }>("/me");
-        const merged: SessionState = { token: s.token, user: r.user };
-        setSession(merged);
-        setSess(merged);
+        // 若是用 DB RPC 登入的 local session（只用於管理員純前端頁面），不需要呼叫 custom-auth /me。
+        if (isLocalRpcSession(s)) {
+          setSession(s);
+          setSess(s);
+        } else {
+          const r = await api<{ ok: boolean; user: SessionUser }>("/me");
+          const merged: SessionState = { token: s.token, user: r.user };
+          setSession(merged);
+          setSess(merged);
+        }
       } catch {
         setSession(null);
         setSess(null);
@@ -53,8 +63,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setSess(s);
       },
       logout: async () => {
+        // local-rpc session 不需要呼叫 custom-auth logout
         try {
-          await api("/logout", { method: "POST" });
+          if (!session || !isLocalRpcSession(session)) {
+            await api("/logout", { method: "POST" });
+          }
         } catch {
           // ignore
         }
