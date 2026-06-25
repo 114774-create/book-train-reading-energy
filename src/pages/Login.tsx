@@ -108,31 +108,31 @@ export default function LoginPage({ onDone }: LoginPageProps) {
   }
 
   return (
-    <div className="min-h-screen p-6 bg-[radial-gradient(circle_at_20%_20%,oklch(0.92_0.12_80),transparent_40%),radial-gradient(circle_at_80%_10%,oklch(0.92_0.12_30),transparent_45%),radial-gradient(circle_at_70%_80%,oklch(0.92_0.12_210),transparent_45%)]">
+    <div className="min-h-screen p-6 bg-[radial-gradient(circle_at_18%_18%,oklch(0.94_0.13_85),transparent_42%),radial-gradient(circle_at_85%_12%,oklch(0.95_0.14_35),transparent_48%),radial-gradient(circle_at_70%_85%,oklch(0.94_0.14_215),transparent_48%)]">
       <div className="mx-auto max-w-5xl grid lg:grid-cols-2 gap-6 items-center min-h-[calc(100vh-3rem)]">
         <div className="order-2 lg:order-1">
-          <Card className="shadow-sm border bg-white/80 backdrop-blur">
+          <Card className="rounded-3xl border bg-white/90 backdrop-blur shadow-[0_18px_45px_-18px_rgba(245,158,11,0.45),0_14px_35px_-22px_rgba(59,130,246,0.35)]">
             <CardHeader>
-              <CardTitle className="tracking-tight text-2xl">青山國小圖書列車</CardTitle>
+              <CardTitle className="tracking-tight text-3xl">青山國小圖書列車</CardTitle>
               <CardDescription>布可列車多功能圖書與閱讀能量管理</CardDescription>
             </CardHeader>
             <CardContent>
-              <Tabs defaultValue="student">
-                <TabsList className="grid grid-cols-3 w-full">
-                  <TabsTrigger value="student">學生</TabsTrigger>
-                  <TabsTrigger value="teacher">老師</TabsTrigger>
-                  <TabsTrigger value="admin">管理員</TabsTrigger>
+              <Tabs defaultValue="student" className="">
+                <TabsList className="grid grid-cols-3 w-full rounded-2xl bg-white/70 p-1 shadow-[0_10px_25px_-18px_rgba(2,132,199,0.35)]">
+                  <TabsTrigger value="student" className="rounded-xl data-[state=active]:bg-amber-400 data-[state=active]:text-white transition-transform hover:-translate-y-0.5 hover:shadow-lg">學生</TabsTrigger>
+                  <TabsTrigger value="teacher" className="rounded-xl data-[state=active]:bg-sky-500 data-[state=active]:text-white transition-transform hover:-translate-y-0.5 hover:shadow-lg">老師</TabsTrigger>
+                  <TabsTrigger value="admin" className="rounded-xl data-[state=active]:bg-violet-500 data-[state=active]:text-white transition-transform hover:-translate-y-0.5 hover:shadow-lg">管理員</TabsTrigger>
                 </TabsList>
 
                 <TabsContent value="student" className="mt-4 space-y-3">
                   <div className="space-y-1">
                     <Label>學號（5碼）</Label>
-                    <Input value={studentNo} onChange={(e) => setStudentNo(e.target.value)} placeholder="例如 30105" inputMode="numeric" />
+                    <Input className="h-12 rounded-2xl px-4" value={studentNo} onChange={(e) => setStudentNo(e.target.value)} placeholder="例如 30105" inputMode="numeric" />
                   </div>
-                  <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                  <div className="rounded-2xl border bg-amber-50/60 px-4 py-3 text-sm text-muted-foreground">
                     學生登入免密碼（只要學號存在就能進入）
                   </div>
-                  <Button className="w-full" onClick={signInStudent} disabled={loading}>
+                  <Button className="w-full h-12 rounded-2xl bg-amber-500 hover:bg-amber-400 text-white shadow-[0_14px_28px_-18px_rgba(245,158,11,0.85)] transition-transform hover:-translate-y-1 hover:shadow-lg active:translate-y-0" onClick={signInStudent} disabled={loading}>
                     登入
                   </Button>
                 </TabsContent>
@@ -141,7 +141,7 @@ export default function LoginPage({ onDone }: LoginPageProps) {
                   <div className="space-y-1">
                     <Label>老師</Label>
                     <select
-                      className="w-full h-10 rounded-md border bg-background px-3 text-sm"
+                      className="w-full h-12 rounded-2xl border bg-white px-4 text-sm shadow-[0_12px_24px_-18px_rgba(59,130,246,0.35)] focus:outline-none"
                       value={teacherAccount}
                       onChange={(e) => setTeacherAccount(e.target.value)}
                     >
@@ -151,28 +151,24 @@ export default function LoginPage({ onDone }: LoginPageProps) {
                         </option>
                       ))}
                     </select>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      遮名顯示：姓氏 + O + 最後一字（兩字姓名顯示「姓O」）
-                    </p>
+
                   </div>
                   <div className="space-y-1">
                     <Label>密碼</Label>
-                    <Input type="password" value={teacherPassword} onChange={(e) => setTeacherPassword(e.target.value)} placeholder="由管理員設定後提供" />
+                    <Input className="h-12 rounded-2xl px-4" type="password" value={teacherPassword} onChange={(e) => setTeacherPassword(e.target.value)} placeholder="請輸入密碼" />
                   </div>
-                  <Button className="w-full" onClick={signInTeacher} disabled={loading}>
+                  <Button className="w-full h-12 rounded-2xl bg-sky-500 hover:bg-sky-400 text-white shadow-[0_14px_28px_-18px_rgba(14,165,233,0.85)] transition-transform hover:-translate-y-1 hover:shadow-lg active:translate-y-0" onClick={signInTeacher} disabled={loading}>
                     登入
                   </Button>
-                  <p className="text-xs text-muted-foreground leading-relaxed">
-                    目前先提供 2 位預設老師（顯示遮名）。下一步會把「管理員新增老師」接到 Supabase 清單，讓下拉選單自動更新。
-                  </p>
+
                 </TabsContent>
 
                 <TabsContent value="admin" className="mt-4 space-y-3">
                   <div className="space-y-1">
                     <Label>管理員密碼</Label>
-                    <Input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="預設 114774" />
+                    <Input className="h-12 rounded-2xl px-4" type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} placeholder="請輸入密碼" />
                   </div>
-                  <Button className="w-full" onClick={signInAdmin} disabled={loading}>
+                  <Button className="w-full h-12 rounded-2xl bg-violet-500 hover:bg-violet-400 text-white shadow-[0_14px_28px_-18px_rgba(139,92,246,0.85)] transition-transform hover:-translate-y-1 hover:shadow-lg active:translate-y-0" onClick={signInAdmin} disabled={loading}>
                     進入管理員
                   </Button>
                 </TabsContent>
@@ -180,15 +176,15 @@ export default function LoginPage({ onDone }: LoginPageProps) {
             </CardContent>
           </Card>
 
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="rounded-xl bg-white/70 border p-3 flex items-center gap-3">
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="rounded-3xl bg-white/80 border p-4 flex items-center gap-3 shadow-[0_16px_30px_-22px_rgba(245,158,11,0.35)] transition-transform hover:-translate-y-1">
               <img src={iconBook} alt="" className="h-10 w-10" />
               <div>
                 <div className="text-sm font-semibold">圖書管理</div>
                 <div className="text-xs text-muted-foreground">書箱分班、借閱狀態</div>
               </div>
             </div>
-            <div className="rounded-xl bg-white/70 border p-3 flex items-center gap-3">
+            <div className="rounded-3xl bg-white/80 border p-4 flex items-center gap-3 shadow-[0_16px_30px_-22px_rgba(14,165,233,0.35)] transition-transform hover:-translate-y-1">
               <img src={iconTicket} alt="" className="h-10 w-10" />
               <div>
                 <div className="text-sm font-semibold">閱讀能量</div>
@@ -197,15 +193,13 @@ export default function LoginPage({ onDone }: LoginPageProps) {
             </div>
           </div>
 
-          <p className="text-xs text-muted-foreground mt-4 leading-relaxed">
-            管理員預設密碼：<span className="font-mono">114774</span>
-          </p>
+
         </div>
 
         <div className="order-1 lg:order-2">
           <div className="relative">
-            <div className="absolute -inset-4 rounded-[2rem] bg-white/30 blur-2xl" />
-            <img src={hero} alt="" className="relative w-full rounded-[1.75rem] border shadow-sm" />
+            <div className="absolute -inset-5 rounded-[2.5rem] bg-white/40 blur-2xl" />
+            <img src={hero} alt="" className="relative w-full rounded-[2.25rem] border shadow-[0_24px_60px_-30px_rgba(14,165,233,0.35)] transition-transform duration-300 hover:scale-[1.02]" />
           </div>
         </div>
       </div>
