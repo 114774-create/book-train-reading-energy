@@ -86,12 +86,16 @@ export default function LoginPage({ onDone }: LoginPageProps) {
     setLoading(true);
     const t = toast.loading("登入中…");
     try {
-      const r = await api<{ ok: boolean; token: string; user: any }>("/login/teacher", {
-        method: "POST",
-        body: JSON.stringify({ account: teacherAccount, password: teacherPassword }),
+      // 改用 DB RPC：account + 明文密碼比對 app_users.password_hash
+      const { data, error } = await supabase.rpc("rpc_login_teacher", {
+        p_account: teacherAccount,
+        p_password: teacherPassword,
       });
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "login_failed");
+
       const { setSession } = await import("@/lib/customAuth");
-      const next = { token: r.token, user: r.user };
+      const next = { token: `local-rpc:${Date.now()}`, user: data.user };
       setSession(next);
       auth.set(next);
       toast.success("老師登入成功");
