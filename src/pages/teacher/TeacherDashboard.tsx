@@ -53,7 +53,7 @@ export default function TeacherDashboard() {
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
-          <h2 className="text-xl font-semibold">老師端｜班級總覽</h2>
+          <h2 className="text-xl font-extrabold tracking-tight">班級總覽 🚂</h2>
           <p className="text-sm text-muted-foreground mt-1">班級：{(me as any)?.class_id ?? (me as any)?.class_code ?? ""}</p>
         </div>
         <div className="flex items-center gap-2">
@@ -61,6 +61,17 @@ export default function TeacherDashboard() {
           <Button variant="outline" onClick={load} disabled={loading}>重新整理</Button>
         </div>
       </div>
+
+      {(() => {
+        const d = books.find((b) => b.return_date)?.return_date ?? null;
+        if (!d) return null;
+        return (
+          <div className="rounded-3xl border bg-sky-50/70 px-5 py-4 shadow-[0_14px_28px_-20px_rgba(14,165,233,0.35)]">
+            <div className="font-extrabold">📢 本次列車應還日期：<span className="font-mono">{d}</span></div>
+            <div className="text-sm text-muted-foreground mt-1">請提醒同學準時歸還，謝謝！</div>
+          </div>
+        );
+      })()}
 
       <Card>
         <CardHeader>

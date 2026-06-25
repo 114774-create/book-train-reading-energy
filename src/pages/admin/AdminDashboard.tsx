@@ -34,6 +34,10 @@ function nextClass(code: ClassCode): ClassCode {
   return CLASS_CODES[Math.min(CLASS_CODES.length - 1, i + 1)] ?? code;
 }
 
+function isGraduationClass(code: ClassCode) {
+  return code.startsWith("6");
+}
+
 function maskName(name: string) {
   const s = name.trim();
   if (!s) return "";
@@ -256,6 +260,28 @@ export default function AdminDashboard() {
   }
 
   async function promote() {
+    // 601（6 開頭）視為畢業：封存資料（不刪除帳號，避免 cascade 刪掉閱讀紀錄）
+    if (isGraduationClass(promoteFrom)) {
+      if (!confirm(`確定將 ${promoteFrom} 的學生批次「畢業封存」？`)) return;
+      const t = toast.loading("畢業封存處理中…");
+      try {
+        const { data, error } = await supabase
+          .from("app_users")
+          .update({ role: "alumni", class_id: null })
+          .eq("role", "student")
+          .eq("class_id", promoteFrom)
+          .select("account");
+        if (error) throw error;
+        toast.success(`完成：封存 ${(data ?? []).length} 筆`);
+        loadUsers();
+      } catch (e: any) {
+        toast.error("畢業封存失敗：" + String(e?.message ?? e));
+      } finally {
+        toast.dismiss(t);
+      }
+      return;
+    }
+
     if (promoteFrom === promoteTo) return toast.error("升年級目標班級不可相同");
     if (!confirm(`確定將 ${promoteFrom} 的學生批次改為 ${promoteTo}？`)) return;
     const t = toast.loading("批次升年級中…");
@@ -325,10 +351,12 @@ export default function AdminDashboard() {
     setPromoteTo(nextClass(promoteFrom));
   }, [promoteFrom]);
 
+  const promoteLabel = isGraduationClass(promoteFrom) ? "畢業封存" : "批次更新";
+
   return (
     <div className="p-6 space-y-4">
       <div>
-        <h2 className="text-xl font-semibold">管理員端｜匯入與管理</h2>
+        <h2 className="text-xl font-extrabold tracking-tight">匯入與管理 🛠️</h2>
         <p className="text-sm text-muted-foreground mt-1">核心功能：書箱 PDF 智慧匯入、每月 Excel 報表匯入比對、人事管理、排行榜與匯出</p>
       </div>
 
@@ -493,9 +521,9 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              <div className="rounded-xl border p-4 bg-muted/10">
-                <div className="font-medium">學生升年級（批次）</div>
-                <div className="text-xs text-muted-foreground mt-1">以班級為單位，把該班所有「學生」改到下一個年級班。</div>
+              <div className="rounded-3xl border p-5 bg-muted/10">
+                <div className="font-extrabold">學生升年級 / 畢業（批次） 🎓</div>
+                <div className="text-xs text-muted-foreground mt-1">以班級為單位：101→201→…；若為 601 則改為「畢業封存」。</div>
                 <div className="mt-3 flex items-center gap-2 flex-wrap">
                   <select className="h-10 rounded-md border bg-background px-3 text-sm" value={promoteFrom} onChange={(e) => setPromoteFrom(e.target.value as any)}>
                     {CLASS_CODES.map((c) => (
@@ -508,7 +536,7 @@ export default function AdminDashboard() {
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
-                  <Button onClick={promote} disabled={loading}>批次更新</Button>
+                  <Button onClick={promote} disabled={loading}>{promoteLabel}</Button>
                 </div>
               </div>
 
@@ -630,39 +658,62 @@ export default function AdminDashboard() {
 }
 
 function ExportPanel({ ymDefault }: { ymDefault: string }) {
-  const [ym, setYm] = useState(ymDefault);
+  // 學年（民國）→ 西元：+1911
+  const now = new Date();
+  const rocNow = now.getUTCFullYear() - 1911;
+
+  const [rocYear, setRocYear] = useState<number>(rocNow);
+  const [semester, setSemester] = useState<"year" | "first" | "second">("year");
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
   const [selectedClass, setSelectedClass] = useState<ClassCode | "all">("all");
 
-  useEffect(() => {
-    setYm(ymDefault);
-  }, [ymDefault]);
+  function ymRangeFor(roc: number, sem: "year" | "first" | "second") {
+    const startYear = roc + 1911;
+    const endYear = startYear + 1;
+    if (sem === "first") return { start: `${startYear}-08`, end: `${endYear}-01` };
+    if (sem === "second") return { start: `${endYear}-02`, end: `${endYear}-07` };
+    return { start: `${startYear}-08`, end: `${endYear}-07` };
+  }
+
+  const range = useMemo(() => ymRangeFor(rocYear, semester), [rocYear, semester]);
 
   async function loadExportData() {
-    const y = (ym || ymDefault).trim();
-    if (!/^\d{4}-\d{2}$/.test(y)) return toast.error("月份格式需為 YYYY-MM");
-
     setLoading(true);
     try {
-      // 直接查 app_users + reading_totals（需在 Supabase 建好 reading_totals）
+      // 依學年/學期區間加總 reading_monthly（需你已建立 reading_monthly）
       const { data, error } = await supabase
-        .from("app_users")
-        .select("account,name,class_id,reading_totals(total_energy,total_books)")
-        .eq("role", "student")
-        .order("class_id")
-        .order("account");
+        .from("reading_monthly")
+        .select("student_no, class_id, name, energy, books, year_month")
+        .gte("year_month", range.start)
+        .lte("year_month", range.end);
       if (error) throw error;
-      const out = (data ?? []).map((r: any) => ({
-        student_no: r.account,
-        account: r.account,
-        name: r.name,
-        class_id: r.class_id,
-        total_energy: r.reading_totals?.total_energy ?? 0,
-        total_books: r.reading_totals?.total_books ?? 0,
-      }));
+
+      // 依學生彙總
+      const map = new Map<string, any>();
+      for (const r of (data as any[]) ?? []) {
+        const k = String(r.student_no);
+        const prev = map.get(k) ?? {
+          student_no: k,
+          account: k,
+          name: r.name ?? "",
+          class_id: r.class_id ?? null,
+          total_energy: 0,
+          total_books: 0,
+        };
+        prev.total_energy += Number(r.energy ?? 0) || 0;
+        prev.total_books += Number(r.books ?? 0) || 0;
+        // 以最新遇到的 name/class 覆蓋（避免空值）
+        if (r.name) prev.name = r.name;
+        if (r.class_id) prev.class_id = r.class_id;
+        map.set(k, prev);
+      }
+
+      const out = Array.from(map.values())
+        .sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));
+
       setRows(out);
-      toast.success(`已載入 ${out.length} 筆`);
+      toast.success(`已載入 ${out.length} 筆（${range.start} ~ ${range.end}）`);
     } catch (e: any) {
       toast.error("載入匯出資料失敗：" + String(e?.message ?? e));
     } finally {
@@ -675,26 +726,57 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
     const data = selectedClass === "all" ? rows : rows.filter((r) => r.class_id === selectedClass);
     if (!data.length) return toast.error("沒有資料可匯出");
 
-    const filename = `布可列車_總紀錄_${ym || ymDefault}_${selectedClass === "all" ? "全校" : selectedClass}.xlsx`;
-    downloadXlsx(filename, [{ name: "總紀錄", rows: data }]);
+    const semLabel = semester === "year" ? "全學年" : semester === "first" ? "上學期" : "下學期";
+    const filename = `布可列車_${rocYear}學年度_${semLabel}_${selectedClass === "all" ? "全校" : selectedClass}.xlsx`;
+
+    const sheetRows = data.map((r) => ({
+      學號: r.student_no,
+      姓名: r.name,
+      班級: r.class_id,
+      能量: r.total_energy,
+      本數: r.total_books,
+      榮譽卡: Math.floor((r.total_energy ?? 0) / 500),
+    }));
+
+    downloadXlsx(filename, [{ name: "總紀錄", rows: sheetRows }]);
     toast.success("已下載 Excel");
   }
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>匯出 Excel / 布可能量圖表下載</CardTitle>
+        <CardTitle>📤 匯出 Excel / 布可能量圖表下載</CardTitle>
         <CardDescription>匯出學期/學年總紀錄 Excel；並生成刻度 500 的長條圖（PNG）</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-end gap-3 flex-wrap">
           <div className="space-y-1">
-            <Label>月份（用來指定學期範圍）</Label>
-            <Input value={ym} onChange={(e) => setYm(e.target.value)} placeholder={ymDefault} className="w-40" />
+            <Label>學年（民國）</Label>
+            <select className="h-12 rounded-2xl border bg-white/60 px-4 text-sm shadow-[0_12px_24px_-18px_rgba(2,132,199,0.22)]" value={rocYear} onChange={(e) => setRocYear(Number(e.target.value))}>
+              {Array.from({ length: 6 }).map((_, i) => {
+                const y = rocNow - i;
+                return (
+                  <option key={y} value={y}>
+                    {y} 學年度
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label>學期</Label>
+            <select className="h-12 rounded-2xl border bg-white/60 px-4 text-sm shadow-[0_12px_24px_-18px_rgba(2,132,199,0.22)]" value={semester} onChange={(e) => setSemester(e.target.value as any)}>
+              <option value="year">全學年</option>
+              <option value="first">上學期（8~1月）</option>
+              <option value="second">下學期（2~7月）</option>
+            </select>
+          </div>
+          <div className="text-xs text-muted-foreground pt-7">
+            期間：<span className="font-mono">{range.start}</span> ~ <span className="font-mono">{range.end}</span>
           </div>
           <div className="space-y-1">
             <Label>班級</Label>
-            <select className="h-10 rounded-md border bg-background px-3 text-sm" value={selectedClass} onChange={(e) => setSelectedClass(e.target.value as any)}>
+            <select className="h-12 rounded-2xl border bg-white/60 px-4 text-sm shadow-[0_12px_24px_-18px_rgba(2,132,199,0.22)]" value={selectedClass} onChange={(e) => setSelectedClass(e.target.value as any)}>
               <option value="all">全校</option>
               {CLASS_CODES.map((c) => (
                 <option key={c} value={c}>{c}</option>
@@ -705,7 +787,7 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
           <Button onClick={exportExcel} disabled={loading}>下載 Excel</Button>
         </div>
 
-        <EnergyChartCard data={rows} classFilter={selectedClass} ym={ym || ymDefault} />
+        <EnergyChartCard data={rows} classFilter={selectedClass} ym={`${rocYear}學年度_${semester === "year" ? "全學年" : semester === "first" ? "上學期" : "下學期"}`} />
 
         {rows.length > 0 && (
           <div className="overflow-auto">
