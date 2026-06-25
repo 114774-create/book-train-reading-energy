@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "@/lib/customAuth";
 import { useAuth } from "@/contexts/AuthContext";
+import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -18,9 +18,19 @@ export default function TeacherDashboard() {
   async function load() {
     setLoading(true);
     try {
-      setMe((user as any) ?? null);
-      const r = await api<{ ok: boolean; books: any[] }>("/books");
-      setBooks((r.books as any) ?? []);
+      const meUser = (user as any) ?? null;
+      setMe(meUser);
+      const classId = (meUser as any)?.class_id ?? (meUser as any)?.class_code ?? null;
+      if (!classId) throw new Error("missing_class_id");
+
+      const { data, error } = await supabase
+        .from("books")
+        .select("barcode,title,author,borrowing_class,return_date,status,borrowed_by,borrowed_at")
+        .eq("borrowing_class", classId)
+        .order("status", { ascending: true })
+        .order("barcode", { ascending: true });
+      if (error) throw error;
+      setBooks((data as any) ?? []);
     } catch (e: any) {
       toast.error(String(e?.message ?? e));
     } finally {
