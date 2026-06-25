@@ -1,5 +1,8 @@
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const API_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string;
+const FALLBACK_URL = "https://fppkjmnthxoajgvodksg.supabase.co";
+const FALLBACK_KEY = "sb_publishable_f6PNf1RiBFPdA3F28ke5-w_CwiQRvGs";
+
+const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) || FALLBACK_URL;
+const API_KEY = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) || FALLBACK_KEY;
 
 function baseUrl() {
   return `${SUPABASE_URL}/functions/v1/custom-auth`;
