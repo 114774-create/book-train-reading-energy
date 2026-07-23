@@ -61,7 +61,7 @@ export default function AdminDashboard() {
   const [uClass, setUClass] = useState<ClassCode | "all">("all");
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [newRole, setNewRole] = useState<UserRole>("student");
+  const [newRole, setNewRole] = useState<UserRole>("teacher");
   const [newAccount, setNewAccount] = useState("");
   const [newName, setNewName] = useState("");
   const [newClass, setNewClass] = useState<ClassCode>("101");
@@ -69,6 +69,16 @@ export default function AdminDashboard() {
 
   const [promoteFrom, setPromoteFrom] = useState<ClassCode>("101");
   const [promoteTo, setPromoteTo] = useState<ClassCode>("201");
+
+  // 學生同步
+  const [syncing, setSyncing] = useState(false);
+
+  // 老師編輯
+  const [editOpen, setEditOpen] = useState(false);
+  const [editUser, setEditUser] = useState<AppUserRow | null>(null);
+  const [editAccount, setEditAccount] = useState("");
+  const [editName, setEditName] = useState("");
+  const [editClass, setEditClass] = useState<ClassCode>("101");
 
   // 排行榜
   const [lbYm, setLbYm] = useState("");
@@ -217,8 +227,9 @@ export default function AdminDashboard() {
     const name = newName.trim();
     if (!account) return toast.error("請輸入帳號");
     if (!name) return toast.error("請輸入姓名");
-    if (newRole !== "student" && !newPassword) return toast.error("老師/管理員需要設定密碼");
-    if (newRole === "student" && !/^\d{5}$/.test(account)) return toast.error("學生帳號建議使用 5 碼學號（如 30105）");
+    // 學生名單由 Google Sheets 同步，不允許手動新增
+    if (newRole === "student") return toast.error("學生帳號由 Google 試算表同步，無法手動新增");
+    if (!newPassword) return toast.error("老師/管理員需要設定密碼");
 
     const t = toast.loading("新增中…");
     try {
@@ -227,8 +238,7 @@ export default function AdminDashboard() {
         role: newRole,
         name,
         class_id: newRole === "admin" ? null : newClass,
-        // 依你目前 DB 設計：password_hash 欄位存放明文（之後若要加密，再統一調整）
-        password_hash: newRole === "student" ? null : newPassword,
+        password_hash: newPassword,
       };
       const { error } = await supabase.from("app_users").insert(row);
       if (error) throw error;
@@ -240,6 +250,73 @@ export default function AdminDashboard() {
       loadUsers();
     } catch (e: any) {
       toast.error("新增失敗：" + String(e?.message ?? e));
+    } finally {
+      toast.dismiss(t);
+    }
+  }
+
+  // 從 Google Sheets 同步學生名單
+  async function syncStudents() {
+    setSyncing(true);
+    const t = toast.loading("從 Google 試算表同步學生名單中…");
+    try {
+      const sess = getSession();
+      if (!sess) throw new Error("not_logged_in");
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/sync-students`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          authorization: `Bearer ${sess.token}`,
+          "Content-Type": "application/json",
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || res.statusText);
+      toast.success(`同步完成：${data.synced} 筆學生（更新 ${data.upserted} 筆，刪除 ${data.deleted} 筆畢業生）`);
+      loadUsers();
+    } catch (e: any) {
+      toast.error("同步失敗：" + String(e?.message ?? e));
+    } finally {
+      toast.dismiss(t);
+      setSyncing(false);
+    }
+  }
+
+  // 開啟編輯老師 Modal
+  function openEditTeacher(user: AppUserRow) {
+    setEditUser(user);
+    setEditAccount(user.account);
+    setEditName(user.name);
+    setEditClass((user.class_id as ClassCode) ?? "101");
+    setEditOpen(true);
+  }
+
+  async function saveEditTeacher() {
+    if (!editUser) return;
+    const account = editAccount.trim();
+    const name = editName.trim();
+    if (!account) return toast.error("請輸入帳號");
+    if (!name) return toast.error("請輸入姓名");
+
+    const t = toast.loading("儲存中…");
+    try {
+      const updates: any = {
+        account,
+        name,
+        class_id: editUser.role === "admin" ? null : editClass,
+      };
+      const { error } = await supabase
+        .from("app_users")
+        .update(updates)
+        .eq("account", editUser.account);
+      if (error) throw error;
+      toast.success("已更新");
+      setEditOpen(false);
+      setEditUser(null);
+      loadUsers();
+    } catch (e: any) {
+      toast.error("更新失敗：" + String(e?.message ?? e));
     } finally {
       toast.dismiss(t);
     }
@@ -437,149 +514,198 @@ export default function AdminDashboard() {
           <Card>
             <CardHeader>
               <CardTitle>人事管理（師生資料）</CardTitle>
-              <CardDescription>支援：新增/移除、學生升年級批次更改班級（轉校/畢業移除）</CardDescription>
+              <CardDescription>學生名單由 Google 試算表單向同步；老師帳號由管理員手動新增與編輯</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Input value={uq} onChange={(e) => setUq(e.target.value)} placeholder="搜尋：學號/帳號/姓名" className="w-64" />
-                  <select className="h-10 rounded-md border bg-background px-3 text-sm" value={uRole} onChange={(e) => setURole(e.target.value as any)}>
-                    <option value="all">全部角色</option>
-                    <option value="student">學生</option>
-                    <option value="teacher">老師</option>
-                    <option value="admin">管理員</option>
-                  </select>
-                  <select className="h-10 rounded-md border bg-background px-3 text-sm" value={uClass} onChange={(e) => setUClass(e.target.value as any)}>
-                    <option value="all">全部班級</option>
-                    {CLASS_CODES.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
+
+              {/* ===== 學生管理區塊（唯讀 + 同步） ===== */}
+              <div className="rounded-xl border bg-blue-50/50 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-bold text-base">👨‍🎓 學生管理（Google 試算表同步）</h3>
+                    <p className="text-xs text-muted-foreground mt-1">學生名單由外部 Google 試算表單向同步，本系統不提供手動新增/編輯/刪除功能。同步時會自動移除已畢業（不在試算表中）的學生。</p>
+                  </div>
+                  <Button onClick={syncStudents} disabled={syncing}>
+                    {syncing ? (
+                      <span className="flex items-center gap-2">
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+                        同步中…
+                      </span>
+                    ) : (
+                      "🔄 從 Google 試算表同步學生名單"
+                    )}
+                  </Button>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" onClick={loadUsers} disabled={loading}>重新整理</Button>
+                <div className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>帳號</TableHead>
+                        <TableHead>姓名</TableHead>
+                        <TableHead>班級</TableHead>
+                        <TableHead className="text-right">狀態</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredUsers.filter((u) => u.role === "student").map((u) => (
+                        <TableRow key={u.account}>
+                          <TableCell className="font-mono">{u.account}</TableCell>
+                          <TableCell>{u.name}</TableCell>
+                          <TableCell className="font-mono">{u.class_id ?? ""}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground">唯讀</TableCell>
+                        </TableRow>
+                      ))}
+                      {!loading && filteredUsers.filter((u) => u.role === "student").length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={4} className="text-center text-muted-foreground py-6">尚未有學生資料，請點擊上方按鈕同步</TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
 
-                  <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-                    <DialogTrigger asChild>
-                      <Button>新增帳號</Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-lg">
-                      <DialogHeader>
-                        <DialogTitle>新增師生帳號</DialogTitle>
-                        <DialogDescription>學生可免密碼登入；老師/管理員需設定密碼。</DialogDescription>
-                      </DialogHeader>
+              {/* ===== 老師管理區塊（手動新增 + 編輯） ===== */}
+              <div className="rounded-xl border bg-amber-50/50 p-4 space-y-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div>
+                    <h3 className="font-bold text-base">👩‍🏫 老師管理（手動管理）</h3>
+                    <p className="text-xs text-muted-foreground mt-1">新增老師帳號或編輯現有老師的姓名、班級與帳號</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={loadUsers} disabled={loading}>重新整理</Button>
+                    <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+                      <DialogTrigger asChild>
+                        <Button size="sm">新增老師帳號</Button>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-lg">
+                        <DialogHeader>
+                          <DialogTitle>新增老師帳號</DialogTitle>
+                          <DialogDescription>老師登入下拉選單會顯示遮名，需設定密碼。</DialogDescription>
+                        </DialogHeader>
 
-                      <div className="grid gap-3">
-                        <div className="grid gap-1">
-                          <Label>角色</Label>
-                          <select className="h-10 rounded-md border bg-background px-3 text-sm" value={newRole} onChange={(e) => setNewRole(e.target.value as any)}>
-                            <option value="student">學生</option>
-                            <option value="teacher">老師</option>
-                            <option value="admin">管理員</option>
-                          </select>
-                        </div>
-
-                        <div className="grid gap-1">
-                          <Label>帳號</Label>
-                          <Input value={newAccount} onChange={(e) => setNewAccount(e.target.value)} placeholder={newRole === "student" ? "例如 30105" : "例如 t03"} />
-                        </div>
-
-                        <div className="grid gap-1">
-                          <Label>姓名</Label>
-                          <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder={newRole === "teacher" ? "例如 王小明" : "例如 林小華"} />
-                        </div>
-
-                        {newRole !== "admin" && (
+                        <div className="grid gap-3">
                           <div className="grid gap-1">
-                            <Label>班級</Label>
+                            <Label>帳號</Label>
+                            <Input value={newAccount} onChange={(e) => setNewAccount(e.target.value)} placeholder="例如 t03" />
+                          </div>
+
+                          <div className="grid gap-1">
+                            <Label>姓名</Label>
+                            <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="例如 王小明" />
+                          </div>
+
+                          <div className="grid gap-1">
+                            <Label>班級 / 負責年級</Label>
                             <select className="h-10 rounded-md border bg-background px-3 text-sm" value={newClass} onChange={(e) => setNewClass(e.target.value as any)}>
                               {CLASS_CODES.map((c) => (
                                 <option key={c} value={c}>{c}</option>
                               ))}
                             </select>
                           </div>
-                        )}
 
-                        {newRole !== "student" && (
                           <div className="grid gap-1">
                             <Label>密碼</Label>
                             <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="請設定密碼" />
                           </div>
-                        )}
 
-                        {newRole === "teacher" && (
                           <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                             老師登入下拉選單會顯示遮名：{maskName(newName || "王小明")}
                           </div>
-                        )}
-                      </div>
+                        </div>
 
-                      <DialogFooter>
-                        <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
-                        <Button onClick={createUser}>新增</Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                        <DialogFooter>
+                          <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
+                          <Button onClick={createUser}>新增</Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  </div>
                 </div>
-              </div>
 
-              <div className="rounded-3xl border p-5 bg-muted/10">
-                <div className="font-extrabold">學生升年級 / 畢業（批次） 🎓</div>
-                <div className="text-xs text-muted-foreground mt-1">以班級為單位：101→201→…；若為 601 則改為「畢業封存」。</div>
-                <div className="mt-3 flex items-center gap-2 flex-wrap">
-                  <select className="h-10 rounded-md border bg-background px-3 text-sm" value={promoteFrom} onChange={(e) => setPromoteFrom(e.target.value as any)}>
-                    {CLASS_CODES.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                  <span className="text-sm text-muted-foreground">→</span>
-                  <select className="h-10 rounded-md border bg-background px-3 text-sm" value={promoteTo} onChange={(e) => setPromoteTo(e.target.value as any)}>
-                    {CLASS_CODES.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                  <Button onClick={promote} disabled={loading}>{promoteLabel}</Button>
-                </div>
-              </div>
-
-              <div className="overflow-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>帳號</TableHead>
-                      <TableHead>姓名</TableHead>
-                      <TableHead>角色</TableHead>
-                      <TableHead>班級</TableHead>
-                      <TableHead className="text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filteredUsers.map((u) => (
-                      <TableRow key={u.account}>
-                        <TableCell className="font-mono">{u.account}</TableCell>
-                        <TableCell>{u.name}</TableCell>
-                        <TableCell>{u.role}</TableCell>
-                        <TableCell className="font-mono">{u.class_id ?? ""}</TableCell>
-                        <TableCell className="text-right">
-                          {u.role !== "admin" ? (
-                            <Button size="sm" variant="destructive" onClick={() => removeUser(u.account)}>
-                              移除
-                            </Button>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-
-                    {!loading && filteredUsers.length === 0 && (
+                <div className="overflow-auto">
+                  <Table>
+                    <TableHeader>
                       <TableRow>
-                        <TableCell colSpan={5} className="text-center text-muted-foreground py-8">沒有資料</TableCell>
+                        <TableHead>帳號</TableHead>
+                        <TableHead>姓名</TableHead>
+                        <TableHead>角色</TableHead>
+                        <TableHead>班級</TableHead>
+                        <TableHead className="text-right">操作</TableHead>
                       </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredUsers.filter((u) => u.role === "teacher" || u.role === "admin").map((u) => (
+                        <TableRow key={u.account}>
+                          <TableCell className="font-mono">{u.account}</TableCell>
+                          <TableCell>{u.name}</TableCell>
+                          <TableCell>{u.role === "admin" ? "管理員" : "老師"}</TableCell>
+                          <TableCell className="font-mono">{u.class_id ?? ""}</TableCell>
+                          <TableCell className="text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <Button size="sm" variant="outline" onClick={() => openEditTeacher(u)}>
+                                編輯
+                              </Button>
+                              {u.role !== "admin" ? (
+                                <Button size="sm" variant="destructive" onClick={() => removeUser(u.account)}>
+                                  移除
+                                </Button>
+                              ) : (
+                                <span className="text-xs text-muted-foreground">—</span>
+                              )}
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {!loading && filteredUsers.filter((u) => u.role === "teacher" || u.role === "admin").length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center text-muted-foreground py-6">尚未有老師資料</TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
+
+              {/* 編輯老師 Modal */}
+              <Dialog open={editOpen} onOpenChange={setEditOpen}>
+                <DialogContent className="sm:max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>編輯老師資料</DialogTitle>
+                    <DialogDescription>修改姓名、班級與帳號</DialogDescription>
+                  </DialogHeader>
+
+                  <div className="grid gap-3">
+                    <div className="grid gap-1">
+                      <Label>帳號</Label>
+                      <Input value={editAccount} onChange={(e) => setEditAccount(e.target.value)} placeholder="例如 t03" />
+                    </div>
+
+                    <div className="grid gap-1">
+                      <Label>姓名</Label>
+                      <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="例如 王小明" />
+                    </div>
+
+                    <div className="grid gap-1">
+                      <Label>班級 / 負責年級</Label>
+                      <select className="h-10 rounded-md border bg-background px-3 text-sm" value={editClass} onChange={(e) => setEditClass(e.target.value as any)}>
+                        {CLASS_CODES.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                      遮名預覽：{maskName(editName || "王小明")}
+                    </div>
+                  </div>
+
+                  <DialogFooter>
+                    <Button variant="outline" onClick={() => setEditOpen(false)}>取消</Button>
+                    <Button onClick={saveEditTeacher}>儲存</Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
             </CardContent>
           </Card>
         </TabsContent>
