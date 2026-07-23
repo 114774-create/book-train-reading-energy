@@ -10,7 +10,7 @@ import type { Book } from "@/lib/types";
 
 export default function StudentDashboard() {
   const { user } = useAuth();
-  const studentId = user?.student_no || user?.account;
+  const studentId = user?.account; // 確保使用帳號作為學生 ID
   const [books, setBooks] = useState<Book[]>([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -59,23 +59,27 @@ export default function StudentDashboard() {
       }>("/api/borrow", { method: "POST", body: JSON.stringify({ barcode, student_id: studentId }) });
 
       if (response.rewards && response.rewards.length > 0) {
-        let hasRewardToast = false;
-        for (const reward of response.rewards) {
+        let hasAchievement = false;
+        response.rewards.forEach((reward) => {
           if (reward.points) {
-            // 達成獎勵
             toast.success(
-              `🎉 恭喜！達成「${reward.event_name}」目標，獲得 ${reward.points} 點！`
+              <div className="flex flex-col gap-1">
+                <span className="font-bold text-lg">🎉 達成獎勵！</span>
+                <span>在「{reward.event_name}」活動中獲得 {reward.points} 點！</span>
+              </div>,
+              { duration: 5000 }
             );
-            hasRewardToast = true;
+            hasAchievement = true;
           } else if (reward.progress) {
-            // 進度提示
             toast.info(
-              `📚 ${reward.message || `「${reward.event_name}」進度：目前已收集 ${reward.progress} 本，加油！`}`
+              <div className="flex flex-col gap-1">
+                <span className="font-bold">📚 活動進度更新</span>
+                <span>{reward.message || `${reward.event_name}：已收集 ${reward.progress}/${reward.target_count} 本`}</span>
+              </div>
             );
-            hasRewardToast = true;
           }
-        }
-        if (!hasRewardToast) {
+        });
+        if (!hasAchievement) {
           toast.success("借閱成功");
         }
       } else {
