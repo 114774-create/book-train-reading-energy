@@ -39,22 +39,3 @@ export interface AppUserRow {
   created_at?: string;
   updated_at?: string;
 }
-
-export interface ThemeEvent {
-  id: string;
-  event_name: string;
-  start_date: string;
-  end_date: string;
-  keywords: string | null;
-  target_count: number;
-  reward_points: number;
-  created_at?: string;
-}
-
-export interface BorrowingRecord {
-  id: string;
-  student_id: string;
-  barcode: string;
-  borrowed_at: string;
-  book_title?: string;
-}

@@ -4,13 +4,8 @@ const FALLBACK_KEY = "sb_publishable_f6PNf1RiBFPdA3F28ke5-w_CwiQRvGs";
 const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL as string) || FALLBACK_URL;
 const API_KEY = (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string) || FALLBACK_KEY;
 
-function getApiUrl(path: string) {
-  if (path.startsWith("/api/")) {
-    // For Vercel serverless functions
-    return path;
-  }
-  // For Supabase Edge Functions
-  return `${SUPABASE_URL}/functions/v1/custom-auth${path}`;
+function baseUrl() {
+  return `${SUPABASE_URL}/functions/v1/custom-auth`;
 }
 
 export type Role = "admin" | "teacher" | "student";
@@ -55,7 +50,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   // 未登入時，先用 anon key 當作 Authorization；登入後再換成自訂 session token。
   headers.authorization = sess?.token ? `Bearer ${sess.token}` : `Bearer ${API_KEY}`;
 
-  const res = await fetch(getApiUrl(path), {
+  const res = await fetch(baseUrl() + path, {
     ...init,
     headers,
   });
