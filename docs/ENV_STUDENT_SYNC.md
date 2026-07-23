@@ -6,10 +6,12 @@
 
 | 變數名稱 | 說明 | 範例值 |
 |----------|------|--------|
-| `SUPABASE_URL` | Supabase 專案 URL | `https://fppkjmnthxoajgvodksg.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key（完整權限） | `eyJhbGciOi...` |
+| `SERVICE_ROLE_KEY` | Supabase service role key（完整權限） | `eyJhbGciOi...` |
 | `GOOGLE_SHEETS_CREDENTIALS` | Google Service Account JSON（與 admin-tools 相同） | `{"type":"service_account",...}` |
 | `STUDENT_LIST_SHEET_ID` | 學生名單試算表 ID | `1DSzB4jo_SWu6QE_HWmNWB4SyQOTjzPmvuy3cdlz4Wi8` |
+
+> **注意：** `SUPABASE_URL` 是 Supabase Edge Function 的內建環境變數，無需手動設定，系統會自動注入。
+> 同時，Supabase 不允許 Secret 名稱以 `SUPABASE_` 開頭，因此 Service Role Key 使用自訂名稱 `SERVICE_ROLE_KEY`。
 
 ## Google Sheets 格式
 

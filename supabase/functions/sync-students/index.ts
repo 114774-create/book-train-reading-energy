@@ -98,11 +98,13 @@ serve(async (req) => {
   }
 
   try {
+    // SUPABASE_URL 是 Supabase Edge Function 內建環境變數，自動可用
     const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    // SERVICE_ROLE_KEY 是使用者自訂的 Secret 名稱（因 Supabase 不允許 SUPABASE_ 開頭）
+    const serviceRoleKey = Deno.env.get("SERVICE_ROLE_KEY") ?? "";
 
     if (!supabaseUrl || !serviceRoleKey) {
-      throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+      throw new Error("Missing SUPABASE_URL (built-in) or SERVICE_ROLE_KEY (custom secret)");
     }
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
