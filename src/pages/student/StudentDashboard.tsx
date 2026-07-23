@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/customAuth";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,6 +9,8 @@ import { toast } from "sonner";
 import type { Book } from "@/lib/types";
 
 export default function StudentDashboard() {
+  const { user } = useAuth();
+  const studentId = user?.student_no || user?.account;
   const [books, setBooks] = useState<Book[]>([]);
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
@@ -38,8 +41,47 @@ export default function StudentDashboard() {
   async function borrow(barcode: string) {
     const t = toast.loading("借閱處理中…");
     try {
-      await api("/borrow", { method: "POST", body: JSON.stringify({ barcode }) });
-      toast.success("借閱成功");
+      if (!studentId) {
+        toast.error("無法取得學生 ID，請重新登入。");
+        return;
+      }
+      const response = await api<{
+        ok: boolean;
+        message: string;
+        rewards: Array<{
+          event_name: string;
+          points?: number;
+          unique_count?: number;
+          target_count?: number;
+          progress?: number;
+          message?: string;
+        }>;
+      }>("/api/borrow", { method: "POST", body: JSON.stringify({ barcode, student_id: studentId }) });
+
+      if (response.rewards && response.rewards.length > 0) {
+        let hasRewardToast = false;
+        for (const reward of response.rewards) {
+          if (reward.points) {
+            // 達成獎勵
+            toast.success(
+              `🎉 恭喜！達成「${reward.event_name}」目標，獲得 ${reward.points} 點！`
+            );
+            hasRewardToast = true;
+          } else if (reward.progress) {
+            // 進度提示
+            toast.info(
+              `📚 ${reward.message || `「${reward.event_name}」進度：目前已收集 ${reward.progress} 本，加油！`}`
+            );
+            hasRewardToast = true;
+          }
+        }
+        if (!hasRewardToast) {
+          toast.success("借閱成功");
+        }
+      } else {
+        toast.success("借閱成功");
+      }
+
       load();
     } catch (e: any) {
       toast.error(String(e?.message ?? e));

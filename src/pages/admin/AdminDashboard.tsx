@@ -12,6 +12,7 @@ import type { AppUserRow, ClassCode, UserRole } from "@/lib/types";
 import { getSession } from "@/lib/customAuth";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
+import { ThemeEventsTab } from "./ThemeEventsTab";
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -361,12 +362,13 @@ export default function AdminDashboard() {
       </div>
 
       <Tabs defaultValue="pdf">
-        <TabsList className="grid grid-cols-5 w-full max-w-4xl">
+        <TabsList className="grid grid-cols-6 w-full max-w-5xl">
           <TabsTrigger value="pdf">PDF 書箱匯入</TabsTrigger>
           <TabsTrigger value="excel">Excel 月報匯入</TabsTrigger>
           <TabsTrigger value="users">人事管理</TabsTrigger>
           <TabsTrigger value="rank">每月排行榜</TabsTrigger>
           <TabsTrigger value="export">匯出/圖表</TabsTrigger>
+          <TabsTrigger value="events">主題活動</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pdf" className="mt-4">
@@ -651,6 +653,10 @@ export default function AdminDashboard() {
 
         <TabsContent value="export" className="mt-4">
           <ExportPanel ymDefault={ymDefault} />
+        </TabsContent>
+
+        <TabsContent value="events" className="mt-4">
+          <ThemeEventsTab />
         </TabsContent>
       </Tabs>
     </div>
