@@ -84,6 +84,12 @@ export default function AdminDashboard() {
   const [lbYm, setLbYm] = useState("");
   const [leaderboard, setLeaderboard] = useState<any>(null);
 
+  // 書箱管理
+  const [boxLoans, setBoxLoans] = useState<any[]>([]);
+  const [pdfImportResult, setPdfImportResult] = useState<any>(null);
+  const [excelImportResult, setExcelImportResult] = useState<any>(null);
+  const [returningBox, setReturningBox] = useState<number | null>(null);
+
   const ymDefault = useMemo(() => {
     const d = new Date();
     const y = d.getUTCFullYear();
@@ -115,7 +121,14 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || res.statusText);
-      toast.success(`完成：${data.imported} 本（班級 ${data.borrowing_class}）`);
+      setPdfImportResult(data);
+      if (data.count_mismatch) {
+        toast.warning(`匯入 ${data.imported} 本（PDF 標示 ${data.declared_count} 本），本數不一致！`);
+      } else {
+        toast.success(`完成：${data.imported} 本（書箱 ${data.box_code}，班級 ${data.borrowing_class}）`);
+      }
+      // 重新載入書箱清單
+      loadBoxLoans();
     } catch (e: any) {
       toast.error("匯入失敗：" + String(e?.message ?? e));
     } finally {
@@ -183,19 +196,43 @@ export default function AdminDashboard() {
     setLoading(true);
     const t = toast.loading("解析 Excel 並匯入中…");
     try {
-      const parsed = await parseMonthlyExcel(excel);
-      if (!parsed.rows.length) throw new Error("沒有可匯入的資料列");
+      const pdfBase64 = await fileToBase64(excel);
+      const sess = getSession();
+      if (!sess) throw new Error("not_logged_in");
 
-      // 走 DB RPC：不使用 Edge Function
-      const { data, error } = await supabase.rpc("rpc_import_reading_month", {
-        p_year_month: ym,
-        p_rows: parsed.rows,
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/import-reading-excel`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          authorization: `Bearer ${sess.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          file_name: excel.name,
+          file_base64: pdfBase64,
+          target_year_month: ym,
+        }),
       });
-      if (error) throw error;
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || res.statusText);
       if (!data?.ok) throw new Error(data?.error || "import_failed");
 
-      setMissing(data.missing_in_report ?? []);
-      toast.success(`完成：處理 ${data.processed} 筆（${ym}）`);
+      setExcelImportResult(data);
+      setPdfImportResult(null);
+
+      // 顯示結果
+      const missingCount = (data.not_found ?? []).length;
+      if (missingCount > 0) {
+        toast.warning(`匯入完成 ${data.processed} 筆，但有 ${missingCount} 筆找不到對應學生`);
+      } else {
+        toast.success(`完成：處理 ${data.processed} 筆（${ym}）`);
+      }
+
+      // 顯示年月不匹配警告
+      if (data.ym_mismatch) {
+        toast.warning(`年月不匹配：檔案中為 ${data.ym_mismatch.file_ym}，您輸入的是 ${data.ym_mismatch.target_ym}`);
+      }
     } catch (e: any) {
       toast.error("匯入失敗：" + String(e?.message ?? e));
     } finally {
@@ -380,6 +417,55 @@ export default function AdminDashboard() {
     }
   }
 
+  // 載入書箱借還清單
+  async function loadBoxLoans() {
+    try {
+      const { data, error } = await supabase
+        .from("box_loans")
+        .select("*")
+        .eq("status", "borrowed")
+        .order("borrow_date", { ascending: false });
+      if (error) throw error;
+      setBoxLoans((data as any[]) ?? []);
+    } catch (e: any) {
+      console.error("載入書箱清單失敗：", e);
+    }
+  }
+
+  // 整批歸還書箱
+  async function returnBox(boxLoanId: number) {
+    if (!confirm("確定要整批歸還此書箱嗎？")) return;
+    setReturningBox(boxLoanId);
+    const t = toast.loading("處理整批歸還中…");
+    try {
+      const sess = getSession();
+      if (!sess) throw new Error("not_logged_in");
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/return-box`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          authorization: `Bearer ${sess.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ box_loan_id: boxLoanId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || res.statusText);
+      if (data.count_mismatch) {
+        toast.warning(`歸還完成 ${data.returned_count} 本（當初借出 ${data.declared_count} 本），有 ${data.missing_books} 本可能遺失！`);
+      } else {
+        toast.success(`歸還完成：${data.returned_count} 本`);
+      }
+      loadBoxLoans();
+    } catch (e: any) {
+      toast.error("歸還失敗：" + String(e?.message ?? e));
+    } finally {
+      toast.dismiss(t);
+      setReturningBox(null);
+    }
+  }
+
   async function loadLeaderboard() {
     const ym = (lbYm || ymDefault).trim();
     if (!/^\d{4}-\d{2}$/.test(ym)) return toast.error("月份格式需為 YYYY-MM");
@@ -422,6 +508,7 @@ export default function AdminDashboard() {
   useEffect(() => {
     // 進到管理員後先把人事資料拉下來
     loadUsers();
+    loadBoxLoans();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -449,19 +536,93 @@ export default function AdminDashboard() {
         </TabsList>
 
         <TabsContent value="pdf" className="mt-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>書箱清單 PDF 智慧匯入</CardTitle>
-              <CardDescription>自動解析：借閱班級、應還日期、登錄號、書名、作者（批次 upsert）</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <div className="space-y-1">
-                <Label>上傳 PDF</Label>
-                <Input type="file" accept="application/pdf" onChange={(e) => setPdf(e.target.files?.[0] ?? null)} />
-              </div>
-              <Button onClick={importPdf} disabled={loading}>開始匯入</Button>
-            </CardContent>
-          </Card>
+          <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>書箱清單 PDF 智慧匯入</CardTitle>
+                <CardDescription>使用 Claude AI 自動解析：書箱編號、借閱班級、應還日期、登錄號、書名、作者（批次 upsert）</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-1">
+                  <Label>上傳 PDF</Label>
+                  <Input type="file" accept="application/pdf" onChange={(e) => setPdf(e.target.files?.[0] ?? null)} />
+                </div>
+                <Button onClick={importPdf} disabled={loading}>開始匯入</Button>
+
+                {/* PDF 匯入結果 */}
+                {pdfImportResult && (
+                  <div className="mt-4">
+                    <div className="rounded-lg border bg-amber-50 p-3 space-y-2">
+                      <p className="text-sm font-medium">匯入結果：</p>
+                      <ul className="text-sm text-muted-foreground space-y-1">
+                        <li>書箱編號：{pdfImportResult.box_code}</li>
+                        <li>書箱名稱：{pdfImportResult.box_name}</li>
+                        <li>借閱班級：{pdfImportResult.borrowing_class}</li>
+                        <li>應還日期：{pdfImportResult.due_date}</li>
+                        <li>實際解析：{pdfImportResult.imported} 本 / 標示：{pdfImportResult.declared_count} 本</li>
+                      </ul>
+                      {pdfImportResult.count_mismatch && (
+                        <p className="text-sm font-medium text-amber-600">⚠️ 解析本數與 PDF 標示不一致，請手動檢查！</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* 書箱管理區塊 */}
+            <Card>
+              <CardHeader>
+                <CardTitle>📦 書箱管理</CardTitle>
+                <CardDescription>目前借出中的書箱，可點擊「整批歸還」處理歸還作業</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>書箱編號</TableHead>
+                        <TableHead>書箱名稱</TableHead>
+                        <TableHead>借閱班級</TableHead>
+                        <TableHead>借閱日期</TableHead>
+                        <TableHead>應還日期</TableHead>
+                        <TableHead>書籍冊數</TableHead>
+                        <TableHead className="text-right">操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {boxLoans.length > 0 ? (
+                        boxLoans.map((bl: any) => (
+                          <TableRow key={bl.id}>
+                            <TableCell className="font-mono">{bl.box_code}</TableCell>
+                            <TableCell>{bl.box_name ?? ""}</TableCell>
+                            <TableCell className="font-mono">{bl.borrowing_class ?? ""}</TableCell>
+                            <TableCell>{bl.borrow_date ?? ""}</TableCell>
+                            <TableCell>{bl.due_date ?? ""}</TableCell>
+                            <TableCell className="text-right font-mono">{bl.book_count ?? 0}</TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => returnBox(bl.id)}
+                                disabled={returningBox === bl.id}
+                              >
+                                {returningBox === bl.id ? "歸還中…" : "整批歸還"}
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center text-muted-foreground py-6">目前沒有借出中的書箱</TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </TabsContent>
 
         <TabsContent value="excel" className="mt-4">
@@ -483,26 +644,39 @@ export default function AdminDashboard() {
               </div>
               <Button onClick={importExcel} disabled={loading}>開始匯入</Button>
 
-              {missing.length > 0 && (
+              {/* Excel 匯入結果 */}
+              {excelImportResult && (
                 <div className="mt-4">
-                  <p className="text-sm font-medium text-red-600">本月無閱讀紀錄學生名單（或未建檔）</p>
-                  <div className="overflow-auto mt-2">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>學號</TableHead>
-                          <TableHead>姓名</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {missing.map((m) => (
-                          <TableRow key={m.student_no}>
-                            <TableCell className="font-mono">{m.student_no}</TableCell>
-                            <TableCell>{m.name}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                  <div className="rounded-lg border bg-green-50 p-3 space-y-2">
+                    <p className="text-sm font-medium">匯入結果：處理 {excelImportResult.processed} 筆</p>
+                    {excelImportResult.ym_mismatch && (
+                      <p className="text-sm font-medium text-amber-600">
+                        ⚠️ 年月不匹配：檔案中為 {excelImportResult.ym_mismatch.file_ym}，您輸入的是 {excelImportResult.ym_mismatch.target_ym}（已繼續匯入）
+                      </p>
+                    )}
+                    {(excelImportResult.not_found ?? []).length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-sm font-medium text-red-600">找不到對應學生的筆數：{(excelImportResult.not_found ?? []).length}</p>
+                        <div className="overflow-auto mt-2">
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>姓名</TableHead>
+                                <TableHead>推算帳號</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {(excelImportResult.not_found ?? []).map((m: any, idx: number) => (
+                                <TableRow key={idx}>
+                                  <TableCell>{m.name}</TableCell>
+                                  <TableCell className="font-mono">{m.account}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
