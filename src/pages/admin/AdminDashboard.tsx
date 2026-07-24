@@ -106,7 +106,9 @@ export default function AdminDashboard() {
     setLoading(true);
     const t = toast.loading("解析 PDF 並匯入中…");
     try {
-      const pdf_base64 = await fileToBase64(pdf);
+      // 上傳前先把 PDF 轉成 base64
+      const arrayBuffer = await pdf.arrayBuffer();
+      const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
       const sess = getSession();
       if (!sess) throw new Error("not_logged_in");
       const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/import-bookbox-pdf`;
@@ -117,7 +119,7 @@ export default function AdminDashboard() {
           authorization: `Bearer ${sess.token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ pdf_base64 }),
+        body: JSON.stringify({ pdf_base64: base64, filename: pdf.name }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || res.statusText);

@@ -4,9 +4,11 @@
 // 需要的 Secret：SERVICE_ROLE_KEY
 // SUPABASE_URL 為內建環境變數
 // 完全不依賴任何外部 AI 服務
+// PDF 文字擷取使用 esm.sh/pdfjs-dist@3.11.174/legacy/build/pdf.js
 //
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { getDocument } from "https://esm.sh/pdfjs-dist@3.11.174/legacy/build/pdf.js";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
@@ -139,37 +141,21 @@ function parseBoxPDF(text: string): ParseResult {
 }
 
 /**
- * 使用 pdfjs-dist 從 base64 擷取 PDF 文字
+ * 使用 pdfjs-dist legacy build 從 base64 擷取 PDF 文字
  */
 async function extractTextFromPdf(pdfBase64: string): Promise<string> {
-  const pdfjsLib = await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.mjs");
-
-  // 設定 worker
-  (pdfjsLib as any).GlobalWorkerOptions.workerSrc =
-    "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.mjs";
-
   // 將 base64 轉為 Uint8Array
-  const binaryStr = atob(pdfBase64);
-  const bytes = new Uint8Array(binaryStr.length);
-  for (let i = 0; i < binaryStr.length; i++) {
-    bytes[i] = binaryStr.charCodeAt(i);
+  const pdfBytes = Uint8Array.from(atob(pdfBase64), (c) => c.charCodeAt(0));
+
+  const pdf = await getDocument({ data: pdfBytes }).promise;
+  let rawText = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    rawText += content.items.map((item: any) => item.str).join(" ") + "\n";
   }
 
-  const loadingTask = (pdfjsLib as any).getDocument({ data: bytes });
-  const pdf = await loadingTask.promise;
-
-  const allText: string[] = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const textContent = await page.getTextContent();
-    const pageText = textContent.items
-      .map((item: any) => item.str)
-      .join(" ");
-    allText.push(pageText);
-  }
-
-  return allText.join("\n");
+  return rawText;
 }
 
 Deno.serve(async (req) => {
@@ -190,7 +176,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { pdf_base64 } = body;
+    const { pdf_base64, filename } = body;
 
     if (!pdf_base64) {
       return new Response(
