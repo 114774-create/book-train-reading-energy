@@ -1,7 +1,7 @@
 //
-// import-bookbox-pdf: 使用 Claude API 解析書箱清單 PDF，寫入 box_loans / books / borrow_logs
+// import-bookbox-pdf: 使用 Gemini API 解析書箱清單 PDF，寫入 box_loans / books / borrow_logs
 //
-// 需要的 Secret：SERVICE_ROLE_KEY、ANTHROPIC_API_KEY
+// 需要的 Secret：SERVICE_ROLE_KEY、GEMINI_API_KEY
 // SUPABASE_URL 為內建環境變數
 //
 
@@ -9,7 +9,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
-const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
+const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -46,7 +46,7 @@ function rocDateToWestern(rocDateStr: string): string | null {
   return null;
 }
 
-interface ClaudeParseResult {
+interface GeminiParseResult {
   box_code: string;
   box_name: string;
   box_category: string;
@@ -62,9 +62,9 @@ interface ClaudeParseResult {
   }[];
 }
 
-// 呼叫 Claude API 解析 PDF
-async function parsePdfWithClaude(pdfBase64: string): Promise<ClaudeParseResult> {
-  const systemPrompt = `你是一個專門解析學校圖書館「書箱清單」PDF 文件的 AI 助手。
+// 呼叫 Gemini API 解析 PDF
+async function parsePdfWithGemini(pdfBase64: string): Promise<GeminiParseResult> {
+  const prompt = `你是一個專門解析學校圖書館「書箱清單」PDF 文件的 AI 助手。
 請將 PDF 內容解析為結構化的 JSON 資料，並嚴格遵守以下格式要求：
 
 書箱資訊：
@@ -86,47 +86,42 @@ async function parsePdfWithClaude(pdfBase64: string): Promise<ClaudeParseResult>
 注意：
 1. 登錄號（barcode）必須當作字串處理，絕對不可 parseInt
 2. 日期如果是民國年（如 115/01/15），請轉換為西元年（2026-01-15）
-3. 如果找不到某個欄位，使用空字串或 0`;
+3. 如果找不到某個欄位，使用空字串或 0
 
-  const userMessage = `請解析以下 PDF 檔案（base64 編碼），並將書箱資訊與書單以 JSON 格式輸出：
+請解析以下 PDF 檔案（base64 編碼），並將書箱資訊與書單以 JSON 格式輸出：
 
 ${pdfBase64}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: [
-        {
-          role: "user",
-          content: userMessage,
-        },
-      ],
-    }),
-  });
+  const geminiRes = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: prompt }]
+        }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json"
+        }
+      })
+    }
+  );
 
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Claude API error: ${res.status} ${errText}`);
+  if (!geminiRes.ok) {
+    const errText = await geminiRes.text();
+    throw new Error(`Gemini API error: ${geminiRes.status} ${errText}`);
   }
 
-  const data = await res.json();
+  const geminiData = await geminiRes.json();
+  const text = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 
-  // 從 Claude 回應中提取 JSON
-  const textContent = data.content?.[0]?.text ?? "";
-  const jsonMatch = textContent.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("無法從 Claude 回應中解析 JSON");
+  if (!text) {
+    throw new Error("Gemini 回傳內容為空");
   }
 
-  return JSON.parse(jsonMatch[0]) as ClaudeParseResult;
+  return JSON.parse(text) as GeminiParseResult;
 }
 
 Deno.serve(async (req) => {
@@ -156,8 +151,8 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 1) 呼叫 Claude 解析 PDF
-    const parsed = await parsePdfWithClaude(pdf_base64);
+    // 1) 呼叫 Gemini 解析 PDF
+    const parsed = await parsePdfWithGemini(pdf_base64);
 
     // 2) 寫入 box_loans
     const borrowDate = rocDateToWestern(parsed.borrow_date) ?? parsed.borrow_date;
