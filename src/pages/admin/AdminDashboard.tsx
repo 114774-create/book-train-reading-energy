@@ -13,6 +13,14 @@ import { getSession } from "@/lib/customAuth";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
+// ★ 新增：前端 PDF 解析套件
+import * as pdfjsLib from "pdfjs-dist";
+// Vite 環境下用 ?url 匯入 worker
+// 若這行報錯，改成下一行的寫法
+import pdfjsWorkerUrl from "pdfjs-dist/build/pdf.worker?url";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+
+// ── 工具函式 ──────────────────────────────────────────────────────────────────
 
 function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -27,6 +35,24 @@ function fileToBase64(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
+
+/** 前端把 PDF 檔案解析成純文字（不依賴任何後端） */
+async function pdfFileToText(file: File): Promise<string> {
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pages: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const pageText = content.items
+      .map((item: any) => item.str)
+      .join(" ");
+    pages.push(pageText);
+  }
+  return pages.join("\n");
+}
+
+// ── 常數 ──────────────────────────────────────────────────────────────────────
 
 const CLASS_CODES: ClassCode[] = ["101", "201", "301", "401", "501", "601"];
 
@@ -46,6 +72,8 @@ function maskName(name: string) {
   if (s.length === 2) return s[0] + "O";
   return s[0] + "O" + s[s.length - 1];
 }
+
+// ── 主元件 ────────────────────────────────────────────────────────────────────
 
 export default function AdminDashboard() {
   const [pdf, setPdf] = useState<File | null>(null);
@@ -101,14 +129,24 @@ export default function AdminDashboard() {
     setLbYm(ymDefault);
   }, [ymDefault]);
 
+  // ★ 修改重點：前端先解析 PDF 文字，再傳 raw_text 給 Edge Function
   async function importPdf() {
     if (!pdf) return toast.error("請選擇 PDF");
     setLoading(true);
-    const t = toast.loading("解析 PDF 並匯入中…");
+    const t = toast.loading("解析 PDF 中…");
     try {
-      const pdf_base64 = await fileToBase64(pdf);
       const sess = getSession();
       if (!sess) throw new Error("not_logged_in");
+
+      // 1. 前端解析 PDF → 純文字
+      toast.loading("擷取 PDF 文字中…", { id: t });
+      const rawText = await pdfFileToText(pdf);
+      if (!rawText || rawText.trim().length < 20) {
+        throw new Error("PDF 擷取文字失敗，請確認 PDF 非掃描圖片格式");
+      }
+
+      // 2. 傳純文字給 Edge Function
+      toast.loading("上傳並寫入資料庫中…", { id: t });
       const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/import-bookbox-pdf`;
       const res = await fetch(url, {
         method: "POST",
@@ -117,22 +155,21 @@ export default function AdminDashboard() {
           authorization: `Bearer ${sess.token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ pdf_base64 }),
+        body: JSON.stringify({ raw_text: rawText }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || res.statusText);
+
       setPdfImportResult(data);
       if (data.count_mismatch) {
-        toast.warning(`匯入 ${data.imported} 本（PDF 標示 ${data.declared_count} 本），本數不一致！`);
+        toast.warning(`匯入 ${data.imported} 本（PDF 標示 ${data.declared_count} 本），本數不一致！`, { id: t });
       } else {
-        toast.success(`完成：${data.imported} 本（書箱 ${data.box_code}，班級 ${data.borrowing_class}）`);
+        toast.success(`完成：${data.imported} 本（書箱 ${data.box_code}，班級 ${data.borrowing_class}）`, { id: t });
       }
-      // 重新載入書箱清單
       loadBoxLoans();
     } catch (e: any) {
-      toast.error("匯入失敗：" + String(e?.message ?? e));
+      toast.error("匯入失敗：" + String(e?.message ?? e), { id: t });
     } finally {
-      toast.dismiss(t);
       setLoading(false);
     }
   }
@@ -152,7 +189,6 @@ export default function AdminDashboard() {
           const ws = wb.Sheets[wb.SheetNames[0]];
           if (!ws) throw new Error("no_sheet");
 
-          // 先用 header:1 讀取第一列標題
           const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true }) as any[][];
           if (!aoa.length) throw new Error("empty");
 
@@ -221,7 +257,6 @@ export default function AdminDashboard() {
       setExcelImportResult(data);
       setPdfImportResult(null);
 
-      // 顯示結果
       const missingCount = (data.not_found ?? []).length;
       if (missingCount > 0) {
         toast.warning(`匯入完成 ${data.processed} 筆，但有 ${missingCount} 筆找不到對應學生`);
@@ -229,7 +264,6 @@ export default function AdminDashboard() {
         toast.success(`完成：處理 ${data.processed} 筆（${ym}）`);
       }
 
-      // 顯示年月不匹配警告
       if (data.ym_mismatch) {
         toast.warning(`年月不匹配：檔案中為 ${data.ym_mismatch.file_ym}，您輸入的是 ${data.ym_mismatch.target_ym}`);
       }
@@ -264,7 +298,6 @@ export default function AdminDashboard() {
     const name = newName.trim();
     if (!account) return toast.error("請輸入帳號");
     if (!name) return toast.error("請輸入姓名");
-    // 學生名單由 Google Sheets 同步，不允許手動新增
     if (newRole === "student") return toast.error("學生帳號由 Google 試算表同步，無法手動新增");
     if (!newPassword) return toast.error("老師/管理員需要設定密碼");
 
@@ -292,7 +325,6 @@ export default function AdminDashboard() {
     }
   }
 
-  // 從 Google Sheets 同步學生名單
   async function syncStudents() {
     setSyncing(true);
     const t = toast.loading("從 Google 試算表同步學生名單中…");
@@ -320,7 +352,6 @@ export default function AdminDashboard() {
     }
   }
 
-  // 開啟編輯老師 Modal
   function openEditTeacher(user: AppUserRow) {
     setEditUser(user);
     setEditAccount(user.account);
@@ -375,7 +406,6 @@ export default function AdminDashboard() {
   }
 
   async function promote() {
-    // 601（6 開頭）視為畢業：封存資料（不刪除帳號，避免 cascade 刪掉閱讀紀錄）
     if (isGraduationClass(promoteFrom)) {
       if (!confirm(`確定將 ${promoteFrom} 的學生批次「畢業封存」？`)) return;
       const t = toast.loading("畢業封存處理中…");
@@ -417,7 +447,6 @@ export default function AdminDashboard() {
     }
   }
 
-  // 載入書箱借還清單
   async function loadBoxLoans() {
     try {
       const { data, error } = await supabase
@@ -432,7 +461,6 @@ export default function AdminDashboard() {
     }
   }
 
-  // 整批歸還書箱
   async function returnBox(boxLoanId: number) {
     if (!confirm("確定要整批歸還此書箱嗎？")) return;
     setReturningBox(boxLoanId);
@@ -471,7 +499,6 @@ export default function AdminDashboard() {
     if (!/^\d{4}-\d{2}$/.test(ym)) return toast.error("月份格式需為 YYYY-MM");
     setLoading(true);
     try {
-      // 直接查 DB monthly 表（需配合你在 Supabase SQL Editor 建立 reading_monthly + 匯入 RPC）
       const classes: any = {};
       for (const c of CLASS_CODES) {
         const { data, error } = await supabase
@@ -506,7 +533,6 @@ export default function AdminDashboard() {
   }, [users, uq, uRole, uClass]);
 
   useEffect(() => {
-    // 進到管理員後先把人事資料拉下來
     loadUsers();
     loadBoxLoans();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -540,7 +566,7 @@ export default function AdminDashboard() {
             <Card>
               <CardHeader>
                 <CardTitle>書箱清單 PDF 智慧匯入</CardTitle>
-                <CardDescription>使用 Claude AI 自動解析：書箱編號、借閱班級、應還日期、登錄號、書名、作者（批次 upsert）</CardDescription>
+                <CardDescription>自動解析：書箱編號、借閱班級、應還日期、登錄號、書名、作者（批次 upsert）</CardDescription>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="space-y-1">
@@ -549,7 +575,6 @@ export default function AdminDashboard() {
                 </div>
                 <Button onClick={importPdf} disabled={loading}>開始匯入</Button>
 
-                {/* PDF 匯入結果 */}
                 {pdfImportResult && (
                   <div className="mt-4">
                     <div className="rounded-lg border bg-amber-50 p-3 space-y-2">
@@ -564,13 +589,15 @@ export default function AdminDashboard() {
                       {pdfImportResult.count_mismatch && (
                         <p className="text-sm font-medium text-amber-600">⚠️ 解析本數與 PDF 標示不一致，請手動檢查！</p>
                       )}
+                      {pdfImportResult.warning && (
+                        <p className="text-sm text-amber-600">{pdfImportResult.warning}</p>
+                      )}
                     </div>
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            {/* 書箱管理區塊 */}
             <Card>
               <CardHeader>
                 <CardTitle>📦 書箱管理</CardTitle>
@@ -644,7 +671,6 @@ export default function AdminDashboard() {
               </div>
               <Button onClick={importExcel} disabled={loading}>開始匯入</Button>
 
-              {/* Excel 匯入結果 */}
               {excelImportResult && (
                 <div className="mt-4">
                   <div className="rounded-lg border bg-green-50 p-3 space-y-2">
@@ -691,8 +717,6 @@ export default function AdminDashboard() {
               <CardDescription>學生名單由 Google 試算表單向同步；老師帳號由管理員手動新增與編輯</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-
-              {/* ===== 學生管理區塊（唯讀 + 同步） ===== */}
               <div className="rounded-xl border bg-blue-50/50 p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div>
@@ -739,7 +763,6 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* ===== 老師管理區塊（手動新增 + 編輯） ===== */}
               <div className="rounded-xl border bg-amber-50/50 p-4 space-y-3">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                   <div>
@@ -757,18 +780,15 @@ export default function AdminDashboard() {
                           <DialogTitle>新增老師帳號</DialogTitle>
                           <DialogDescription>老師登入下拉選單會顯示遮名，需設定密碼。</DialogDescription>
                         </DialogHeader>
-
                         <div className="grid gap-3">
                           <div className="grid gap-1">
                             <Label>帳號</Label>
                             <Input value={newAccount} onChange={(e) => setNewAccount(e.target.value)} placeholder="例如 t03" />
                           </div>
-
                           <div className="grid gap-1">
                             <Label>姓名</Label>
                             <Input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="例如 王小明" />
                           </div>
-
                           <div className="grid gap-1">
                             <Label>班級 / 負責年級</Label>
                             <select className="h-10 rounded-md border bg-background px-3 text-sm" value={newClass} onChange={(e) => setNewClass(e.target.value as any)}>
@@ -777,17 +797,14 @@ export default function AdminDashboard() {
                               ))}
                             </select>
                           </div>
-
                           <div className="grid gap-1">
                             <Label>密碼</Label>
                             <Input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="請設定密碼" />
                           </div>
-
                           <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                             老師登入下拉選單會顯示遮名：{maskName(newName || "王小明")}
                           </div>
                         </div>
-
                         <DialogFooter>
                           <Button variant="outline" onClick={() => setCreateOpen(false)}>取消</Button>
                           <Button onClick={createUser}>新增</Button>
@@ -817,13 +834,9 @@ export default function AdminDashboard() {
                           <TableCell className="font-mono">{u.class_id ?? ""}</TableCell>
                           <TableCell className="text-right">
                             <div className="flex items-center justify-end gap-2">
-                              <Button size="sm" variant="outline" onClick={() => openEditTeacher(u)}>
-                                編輯
-                              </Button>
+                              <Button size="sm" variant="outline" onClick={() => openEditTeacher(u)}>編輯</Button>
                               {u.role !== "admin" ? (
-                                <Button size="sm" variant="destructive" onClick={() => removeUser(u.account)}>
-                                  移除
-                                </Button>
+                                <Button size="sm" variant="destructive" onClick={() => removeUser(u.account)}>移除</Button>
                               ) : (
                                 <span className="text-xs text-muted-foreground">—</span>
                               )}
@@ -841,25 +854,21 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
-              {/* 編輯老師 Modal */}
               <Dialog open={editOpen} onOpenChange={setEditOpen}>
                 <DialogContent className="sm:max-w-lg">
                   <DialogHeader>
                     <DialogTitle>編輯老師資料</DialogTitle>
                     <DialogDescription>修改姓名、班級與帳號</DialogDescription>
                   </DialogHeader>
-
                   <div className="grid gap-3">
                     <div className="grid gap-1">
                       <Label>帳號</Label>
                       <Input value={editAccount} onChange={(e) => setEditAccount(e.target.value)} placeholder="例如 t03" />
                     </div>
-
                     <div className="grid gap-1">
                       <Label>姓名</Label>
                       <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="例如 王小明" />
                     </div>
-
                     <div className="grid gap-1">
                       <Label>班級 / 負責年級</Label>
                       <select className="h-10 rounded-md border bg-background px-3 text-sm" value={editClass} onChange={(e) => setEditClass(e.target.value as any)}>
@@ -868,12 +877,10 @@ export default function AdminDashboard() {
                         ))}
                       </select>
                     </div>
-
                     <div className="rounded-lg border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
                       遮名預覽：{maskName(editName || "王小明")}
                     </div>
                   </div>
-
                   <DialogFooter>
                     <Button variant="outline" onClick={() => setEditOpen(false)}>取消</Button>
                     <Button onClick={saveEditTeacher}>儲存</Button>
@@ -900,7 +907,6 @@ export default function AdminDashboard() {
                   <Button onClick={loadLeaderboard} disabled={loading}>查詢</Button>
                 </div>
               </div>
-
               {leaderboard && (
                 <div className="grid gap-4 md:grid-cols-2">
                   {CLASS_CODES.map((c) => {
@@ -964,7 +970,6 @@ export default function AdminDashboard() {
 }
 
 function ExportPanel({ ymDefault }: { ymDefault: string }) {
-  // 學年（民國）→ 西元：+1911
   const now = new Date();
   const rocNow = now.getUTCFullYear() - 1911;
 
@@ -987,7 +992,6 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   async function loadExportData() {
     setLoading(true);
     try {
-      // 依學年/學期區間加總 reading_monthly（需你已建立 reading_monthly）
       const { data, error } = await supabase
         .from("reading_monthly")
         .select("student_no, class_id, name, energy, books, year_month")
@@ -995,7 +999,6 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
         .lte("year_month", range.end);
       if (error) throw error;
 
-      // 依學生彙總
       const map = new Map<string, any>();
       for (const r of (data as any[]) ?? []) {
         const k = String(r.student_no);
@@ -1009,7 +1012,6 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
         };
         prev.total_energy += Number(r.energy ?? 0) || 0;
         prev.total_books += Number(r.books ?? 0) || 0;
-        // 以最新遇到的 name/class 覆蓋（避免空值）
         if (r.name) prev.name = r.name;
         if (r.class_id) prev.class_id = r.class_id;
         map.set(k, prev);
@@ -1019,7 +1021,11 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
         .sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));
 
       setRows(out);
-      toast.success(`已載入 ${out.length} 筆（${range.start} ~ ${range.end}）`);
+      if (out.length === 0) {
+        toast.warning("此期間尚無資料，請先匯入 Excel 月報");
+      } else {
+        toast.success(`已載入 ${out.length} 筆（${range.start} ~ ${range.end}）`);
+      }
     } catch (e: any) {
       toast.error("載入匯出資料失敗：" + String(e?.message ?? e));
     } finally {
@@ -1061,11 +1067,7 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
             <select className="h-12 rounded-2xl border bg-white/60 px-4 text-sm shadow-[0_12px_24px_-18px_rgba(2,132,199,0.22)]" value={rocYear} onChange={(e) => setRocYear(Number(e.target.value))}>
               {Array.from({ length: 6 }).map((_, i) => {
                 const y = rocNow - i;
-                return (
-                  <option key={y} value={y}>
-                    {y} 學年度
-                  </option>
-                );
+                return <option key={y} value={y}>{y} 學年度</option>;
               })}
             </select>
           </div>
@@ -1084,14 +1086,18 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
             <Label>班級</Label>
             <select className="h-12 rounded-2xl border bg-white/60 px-4 text-sm shadow-[0_12px_24px_-18px_rgba(2,132,199,0.22)]" value={selectedClass} onChange={(e) => setSelectedClass(e.target.value as any)}>
               <option value="all">全校</option>
-              {CLASS_CODES.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
+              {CLASS_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <Button onClick={loadExportData} disabled={loading} variant="outline">載入資料</Button>
           <Button onClick={exportExcel} disabled={loading}>下載 Excel</Button>
         </div>
+
+        {rows.length === 0 && !loading && (
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground text-center">
+            尚未載入資料，請先匯入 Excel 月報，再點「載入資料」
+          </div>
+        )}
 
         <EnergyChartCard data={rows} classFilter={selectedClass} ym={`${rocYear}學年度_${semester === "year" ? "全學年" : semester === "first" ? "上學期" : "下學期"}`} />
 
@@ -1133,11 +1139,10 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
 
   const chartData = useMemo(() => {
     const rows = classFilter === "all" ? data : data.filter((r) => r.class_id === classFilter);
-    const top = [...rows]
+    return [...rows]
       .sort((a, b) => (b.total_energy ?? 0) - (a.total_energy ?? 0))
       .slice(0, 20)
       .map((r) => ({ name: r.name, energy: r.total_energy ?? 0 }));
-    return top;
   }, [data, classFilter]);
 
   async function downloadChart() {
@@ -1149,7 +1154,6 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
     toast.success("已下載圖表 PNG");
   }
 
-  // 以 500 為刻度：Recharts 的 tick formatter + domain
   const maxE = Math.max(0, ...chartData.map((d) => d.energy));
   const maxTick = Math.ceil(maxE / 500) * 500;
 
@@ -1164,12 +1168,13 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
       </CardHeader>
       <CardContent>
         <div id={refId} className="w-full overflow-x-auto">
-          {/* 使用現成 ui/chart wrapper（內部仍是 recharts） */}
           <div className="min-w-[720px]">
             <EnergyBarChart data={chartData} maxTick={maxTick} />
           </div>
         </div>
-        {chartData.length === 0 && <div className="text-sm text-muted-foreground py-6">尚無資料（先按「載入資料」）</div>}
+        {chartData.length === 0 && (
+          <div className="text-sm text-muted-foreground py-6 text-center">尚無資料（先按「載入資料」）</div>
+        )}
       </CardContent>
     </Card>
   );

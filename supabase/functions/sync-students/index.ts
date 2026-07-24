@@ -1,23 +1,11 @@
-// supabase/functions/sync-students/index.ts
-//
-// 從 Google Sheets 單向同步學生名單到 app_users 表
-//
-// 需要在 Supabase Edge Function Secrets 設定（Settings → Edge Functions）：
-//   GOOGLE_SERVICE_ACCOUNT_JSON  ← 服務帳戶 JSON 的完整內容（字串）
-//   GOOGLE_SHEETS_ID             ← 試算表 ID（網址 /d/ 後面那段）
-//   SHEETS_RANGE                 ← 讀取範圍，例如 Students!A2:E（跳過標題列）
-//
-// 部署指令（在專案根目錄執行）：
-//   supabase functions deploy sync-students --no-verify-jwt
+// import-bookbox-pdf Edge Function
+// PDF 解析移到前端做，此函式只接收純文字 + 寫入資料庫
+// 需要的 Secret：SERVICE_ROLE_KEY
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SERVICE_ACCOUNT_JSON = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON")!;
-const SHEETS_ID = Deno.env.get("GOOGLE_SHEETS_ID")!;
-// 預設讀 Students 工作表，跳過第一列標題（A2:E 表示從第 2 列到 E 欄結尾）
-const SHEETS_RANGE = Deno.env.get("SHEETS_RANGE") ?? "Students!A2:E";
+const SERVICE_ROLE_KEY = Deno.env.get("SERVICE_ROLE_KEY")!;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -25,166 +13,207 @@ const corsHeaders = {
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// ── Google OAuth2：用服務帳戶換 access token ─────────────────────────────────
-async function getGoogleAccessToken(): Promise<string> {
-  const sa = JSON.parse(SERVICE_ACCOUNT_JSON);
+const SUPABASE = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  const now = Math.floor(Date.now() / 1000);
-  const header = { alg: "RS256", typ: "JWT" };
-  const payload = {
-    iss: sa.client_email,
-    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
-    aud: "https://oauth2.googleapis.com/token",
-    iat: now,
-    exp: now + 3600,
-  };
-
-  const encode = (obj: object) =>
-    btoa(JSON.stringify(obj))
-      .replace(/\+/g, "-")
-      .replace(/\//g, "_")
-      .replace(/=+$/, "");
-
-  const signingInput = `${encode(header)}.${encode(payload)}`;
-
-  // 把 PEM 私鑰匯入成 CryptoKey
-  const pemBody = sa.private_key
-    .replace(/-----BEGIN PRIVATE KEY-----/, "")
-    .replace(/-----END PRIVATE KEY-----/, "")
-    .replace(/\n/g, "");
-  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    binaryDer,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-
-  const signature = await crypto.subtle.sign(
-    "RSASSA-PKCS1-v1_5",
-    cryptoKey,
-    new TextEncoder().encode(signingInput)
-  );
-
-  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-
-  const jwt = `${signingInput}.${sigB64}`;
-
-  // 換 access token
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion: jwt,
-    }),
-  });
-  const tokenData = await tokenRes.json();
-  if (!tokenData.access_token) {
-    throw new Error("無法取得 Google access token: " + JSON.stringify(tokenData));
-  }
-  return tokenData.access_token;
+interface ParseResult {
+  box_code: string | null;
+  box_name: string | null;
+  box_category: string | null;
+  borrowing_class: string | null;
+  representative: string | null;
+  book_count: number;
+  borrow_date: string | null;
+  due_date: string | null;
+  books: { barcode: string; title: string; author: string | null }[];
 }
 
-// ── 主流程 ────────────────────────────────────────────────────────────────────
+function rocToISO(roc: string | null): string | null {
+  if (!roc) return null;
+  const [y, m, d] = roc.split("-");
+  return `${parseInt(y) + 1911}-${m.padStart(2,"0")}-${d.padStart(2,"0")}`;
+}
+
+function parseBoxPDF(text: string): ParseResult {
+  const get = (pattern: RegExp) => text.match(pattern)?.[1]?.trim() ?? null;
+
+  const boxCode     = get(/書箱編號\s+(BOX\w+)/);
+  const boxName     = get(/書箱名稱\s+(.+?)(?=書箱類別|書籍冊數|\n)/);
+  const boxCat      = get(/書箱類別\s+(.+?)(?=書籍冊數|\n)/);
+  const borrowClass = get(/借閱班級\s+(.+?)(?=借閱代表|\n)/);
+  const rep         = get(/代表人[：:]\s*(\S+)/);
+  const bookCount   = parseInt(get(/書籍冊數\s+(\d+)/) ?? "0", 10);
+  const borrowDate  = get(/借閱日期\s+(\d{2,3}-\d{2}-\d{2})/);
+  const dueDate     = get(/應還日期\s+(\d{2,3}-\d{2}-\d{2})/);
+
+  // 書單解析
+  const books: { barcode: string; title: string; author: string | null }[] = [];
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  let inList = false;
+  let current: { barcode: string; parts: string[] } | null = null;
+
+  const flush = () => {
+    if (!current) return;
+    const full = current.parts.join(" ").trim();
+    const sepIdx = full.lastIndexOf("；");
+    books.push({
+      barcode: current.barcode,
+      title:  sepIdx > -1 ? full.slice(0, sepIdx).trim() : full,
+      author: sepIdx > -1 ? full.slice(sepIdx + 1).trim() : null,
+    });
+    current = null;
+  };
+
+  for (const line of lines) {
+    if (!inList) {
+      if (/序號/.test(line) && /登錄號/.test(line)) inList = true;
+      continue;
+    }
+    // 序號 + 登錄號（7~9碼）開頭 = 新的一本書
+    const m = line.match(/^(\d+)\s+(\d{7,9})\s*(.*)/);
+    if (m) {
+      flush();
+      current = { barcode: m[2], parts: m[3] ? [m[3]] : [] };
+    } else if (current) {
+      current.parts.push(line);
+    }
+  }
+  flush();
+
+  return {
+    box_code: boxCode,
+    box_name: boxName,
+    box_category: boxCat,
+    borrowing_class: borrowClass,
+    representative: rep,
+    book_count: bookCount,
+    borrow_date: rocToISO(borrowDate),
+    due_date: rocToISO(dueDate),
+    books,
+  };
+}
+
 Deno.serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // 1) 取 Google access token
-    const accessToken = await getGoogleAccessToken();
-
-    // 2) 讀取 Google Sheets 資料
-    const sheetsUrl =
-      `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${encodeURIComponent(SHEETS_RANGE)}`;
-    const sheetsRes = await fetch(sheetsUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    const sheetsData = await sheetsRes.json();
-
-    if (!sheetsData.values) {
-      throw new Error("試算表沒有資料，請確認 SHEETS_ID 與 SHEETS_RANGE 設定是否正確");
+    // 驗證 token
+    const authHeader = req.headers.get("authorization") ?? "";
+    const token = authHeader.replace("Bearer ", "").trim();
+    if (!token || !token.startsWith("local-rpc:")) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "unauthorized" }),
+        { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // 3) 把每列轉成學生物件
-    // Google Sheets 欄位順序（Students 工作表）：
-    //   A=id, B=grade, C=no, D=name, E=ename
-    // 對應 app_users：
-    //   account = id（例如 20101）
-    //   class_id = grade（例如 201）
-    //   name = name（例如 王傳蓮）
-    //   role = 'student'（固定）
-    //   password_hash = NULL（學生不需要密碼）
-    const rows: string[][] = sheetsData.values;
-    const students = rows
-      .filter((r) => r[0]?.trim()) // 過濾空列
-      .map((r) => ({
-        account: r[0].trim(),       // id → account
-        class_id: r[1]?.trim() ?? null, // grade → class_id
-        name: r[3]?.trim() ?? "",   // name（第 4 欄，index 3）
-        role: "student" as const,
-        password_hash: null,
-      }));
+    const body = await req.json();
+    // 接受兩種格式：前端傳 raw_text（新版），或舊版傳 pdf_base64 但已無法處理
+    const rawText: string | undefined = body.raw_text;
 
-    if (students.length === 0) {
-      throw new Error("試算表讀到 0 筆學生，請確認工作表名稱與範圍");
+    if (!rawText || rawText.trim().length < 20) {
+      return new Response(
+        JSON.stringify({ ok: false, error: "缺少 raw_text，請確認前端有先解析 PDF 文字再傳送" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
 
-    // 4) 寫入 Supabase（service role 略過 RLS）
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    // 解析
+    const parsed = parseBoxPDF(rawText);
 
-    // 先拿目前 DB 裡所有學生的 account 清單
-    const { data: existing, error: fetchErr } = await supabase
-      .from("app_users")
-      .select("account")
-      .eq("role", "student");
-    if (fetchErr) throw fetchErr;
-
-    const existingAccounts = new Set((existing ?? []).map((u) => u.account));
-    const sheetAccounts = new Set(students.map((s) => s.account));
-
-    // upsert：新增 or 更新（名字、班級可能異動）
-    const { error: upsertErr } = await supabase
-      .from("app_users")
-      .upsert(students, { onConflict: "account" });
-    if (upsertErr) throw upsertErr;
-
-    // 刪除已畢業（在 DB 有但試算表已不存在）的學生
-    const toDelete = [...existingAccounts].filter((a) => !sheetAccounts.has(a));
-    let deleted = 0;
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
-        .from("app_users")
-        .delete()
-        .in("account", toDelete);
-      if (delErr) throw delErr;
-      deleted = toDelete.length;
+    if (!parsed.box_code) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: "無法解析書箱編號（BOXxxxx），請確認 PDF 格式正確",
+          raw_preview: rawText.slice(0, 300),
+        }),
+        { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
     }
+
+    // 寫入 box_loans
+    const { data: boxLoanData, error: boxLoanErr } = await SUPABASE
+      .from("box_loans")
+      .insert({
+        box_code:        parsed.box_code,
+        box_name:        parsed.box_name,
+        box_category:    parsed.box_category,
+        borrowing_class: parsed.borrowing_class,
+        representative:  parsed.representative,
+        book_count:      parsed.book_count,
+        borrow_date:     parsed.borrow_date,
+        due_date:        parsed.due_date,
+        status:          "borrowed",
+      })
+      .select("id")
+      .single();
+    if (boxLoanErr) throw boxLoanErr;
+    const boxLoanId = boxLoanData.id;
+
+    // Upsert books
+    if (parsed.books.length > 0) {
+      const { error: bookErr } = await SUPABASE
+        .from("books")
+        .upsert(
+          parsed.books.map(b => ({
+            barcode:         b.barcode,
+            title:           b.title,
+            author:          b.author,
+            borrowing_class: parsed.borrowing_class,
+            return_date:     parsed.due_date,
+            status:          "borrowed",
+            borrowed_by:     null,
+            borrowed_at:     new Date().toISOString(),
+            box_code:        parsed.box_code,
+            box_name:        parsed.box_name,
+          })),
+          { onConflict: "barcode" }
+        );
+      if (bookErr) throw bookErr;
+
+      // 寫入 borrow_logs
+      const { error: logErr } = await SUPABASE
+        .from("borrow_logs")
+        .insert(
+          parsed.books.map(b => ({
+            student_id:  null,
+            barcode:     b.barcode,
+            action:      "borrow",
+            box_loan_id: boxLoanId,
+            at:          new Date().toISOString(),
+          }))
+        );
+      if (logErr) throw logErr;
+    }
+
+    const countMismatch = parsed.books.length !== parsed.book_count;
 
     return new Response(
       JSON.stringify({
         ok: true,
-        synced: students.length,
-        upserted: students.length,
-        deleted,
+        box_loan_id:    boxLoanId,
+        box_code:       parsed.box_code,
+        box_name:       parsed.box_name,
+        borrowing_class:parsed.borrowing_class,
+        borrow_date:    parsed.borrow_date,
+        due_date:       parsed.due_date,
+        imported:       parsed.books.length,
+        declared_count: parsed.book_count,
+        count_mismatch: countMismatch,
+        warning: countMismatch
+          ? `PDF 宣告 ${parsed.book_count} 本，實際解析到 ${parsed.books.length} 本，請人工核對`
+          : null,
       }),
-      { headers: { ...corsHeaders, "content-type": "application/json" } }
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+
   } catch (err: any) {
-    console.error("sync-students error:", err);
+    console.error("import-bookbox-pdf error:", err);
     return new Response(
-      JSON.stringify({ error: err.message ?? String(err) }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "content-type": "application/json" },
-      }
+      JSON.stringify({ ok: false, error: err.message ?? String(err) }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
