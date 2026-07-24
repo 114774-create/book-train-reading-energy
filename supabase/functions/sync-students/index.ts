@@ -14,8 +14,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const SERVICE_ACCOUNT_JSON = Deno.env.get("GOOGLE_SHEETS_CREDENTIALS")!;
-const SHEETS_ID = Deno.env.get("STUDENT_LIST_SHEET_ID")!;
+const SERVICE_ACCOUNT_JSON = Deno.env.get("GOOGLE_SERVICE_ACCOUNT_JSON")!;
+const SHEETS_ID = Deno.env.get("GOOGLE_SHEETS_ID")!;
 // 預設讀 Students 工作表，跳過第一列標題（A2:E 表示從第 2 列到 E 欄結尾）
 const SHEETS_RANGE = Deno.env.get("SHEETS_RANGE") ?? "Students!A2:E";
 
