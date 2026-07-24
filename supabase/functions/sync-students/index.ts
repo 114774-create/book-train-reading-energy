@@ -1,45 +1,61 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3";
+// supabase/functions/sync-students/index.ts
+//
+// 從 Google Sheets 單向同步學生名單到 app_users 表
+//
+// 需要在 Supabase Edge Function Secrets 設定（Settings → Edge Functions）：
+//   GOOGLE_SERVICE_ACCOUNT_JSON  ← 服務帳戶 JSON 的完整內容（字串）
+//   GOOGLE_SHEETS_ID             ← 試算表 ID（網址 /d/ 後面那段）
+//   SHEETS_RANGE                 ← 讀取範圍，例如 Students!A2:E（跳過標題列）
+//
+// 部署指令（在專案根目錄執行）：
+//   supabase functions deploy sync-students --no-verify-jwt
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const SERVICE_ACCOUNT_JSON = Deno.env.get("GOOGLE_SHEETS_CREDENTIALS")!;
+const SHEETS_ID = Deno.env.get("STUDENT_LIST_SHEET_ID")!;
+// 預設讀 Students 工作表，跳過第一列標題（A2:E 表示從第 2 列到 E 欄結尾）
+const SHEETS_RANGE = Deno.env.get("SHEETS_RANGE") ?? "Students!A2:E";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-// Google OAuth2 JWT 工具函式（使用 Service Account）
-async function getGoogleAccessToken(
-  serviceAccountKey: any,
-  scope: string
-): Promise<string> {
-  const header = btoa(JSON.stringify({ alg: "RS256", typ: "JWT" }));
+// ── Google OAuth2：用服務帳戶換 access token ─────────────────────────────────
+async function getGoogleAccessToken(): Promise<string> {
+  const sa = JSON.parse(SERVICE_ACCOUNT_JSON);
+
   const now = Math.floor(Date.now() / 1000);
-  const claims = btoa(
-    JSON.stringify({
-      iss: serviceAccountKey.client_email,
-      scope,
-      aud: serviceAccountKey.token_uri,
-      exp: now + 3600,
-      iat: now,
-    })
-  );
-  const signatureInput = `${header}.${claims}`;
+  const header = { alg: "RS256", typ: "JWT" };
+  const payload = {
+    iss: sa.client_email,
+    scope: "https://www.googleapis.com/auth/spreadsheets.readonly",
+    aud: "https://oauth2.googleapis.com/token",
+    iat: now,
+    exp: now + 3600,
+  };
 
-  // 將 PEM private key 轉為 crypto 可用的格式
-  const pemKey = serviceAccountKey.private_key;
-  const encoder = new TextEncoder();
+  const encode = (obj: object) =>
+    btoa(JSON.stringify(obj))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
 
-  // 使用 Deno crypto 進行 RS256 簽章
-  const keyData = pemKey
-    .replace("-----BEGIN PRIVATE KEY-----", "")
-    .replace("-----END PRIVATE KEY-----", "")
+  const signingInput = `${encode(header)}.${encode(payload)}`;
+
+  // 把 PEM 私鑰匯入成 CryptoKey
+  const pemBody = sa.private_key
+    .replace(/-----BEGIN PRIVATE KEY-----/, "")
+    .replace(/-----END PRIVATE KEY-----/, "")
     .replace(/\n/g, "");
-
-  const keyBytes = Uint8Array.from(atob(keyData), (c) => c.charCodeAt(0));
-
+  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
   const cryptoKey = await crypto.subtle.importKey(
     "pkcs8",
-    keyBytes,
+    binaryDer,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"]
@@ -48,191 +64,126 @@ async function getGoogleAccessToken(
   const signature = await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     cryptoKey,
-    encoder.encode(signatureInput)
+    new TextEncoder().encode(signingInput)
   );
 
-  const signatureB64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  const jwt = `${signatureInput}.${signatureB64}`;
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
 
-  // 交換 access token
-  const tokenRes = await fetch(serviceAccountKey.token_uri, {
+  const jwt = `${signingInput}.${sigB64}`;
+
+  // 換 access token
+  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
       assertion: jwt,
     }),
   });
-
-  if (!tokenRes.ok) {
-    const errText = await tokenRes.text();
-    throw new Error(`Google token exchange failed: ${tokenRes.status} ${errText}`);
-  }
-
   const tokenData = await tokenRes.json();
+  if (!tokenData.access_token) {
+    throw new Error("無法取得 Google access token: " + JSON.stringify(tokenData));
+  }
   return tokenData.access_token;
 }
 
-// 讀取 Google Sheets 資料
-async function readGoogleSheet(
-  accessToken: string,
-  spreadsheetId: string,
-  range: string
-): Promise<any[][]> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`;
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Google Sheets API error: ${res.status} ${errText}`);
-  }
-  const data = await res.json();
-  return data.values ?? [];
-}
-
-serve(async (req) => {
+// ── 主流程 ────────────────────────────────────────────────────────────────────
+Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    // 1) 取 Google access token
+    const accessToken = await getGoogleAccessToken();
 
-    if (!supabaseUrl || !serviceRoleKey) {
-      throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
+    // 2) 讀取 Google Sheets 資料
+    const sheetsUrl =
+      `https://sheets.googleapis.com/v4/spreadsheets/${SHEETS_ID}/values/${encodeURIComponent(SHEETS_RANGE)}`;
+    const sheetsRes = await fetch(sheetsUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const sheetsData = await sheetsRes.json();
+
+    if (!sheetsData.values) {
+      throw new Error("試算表沒有資料，請確認 SHEETS_ID 與 SHEETS_RANGE 設定是否正確");
     }
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    // 3) 把每列轉成學生物件
+    // Google Sheets 欄位順序（Students 工作表）：
+    //   A=id, B=grade, C=no, D=name, E=ename
+    // 對應 app_users：
+    //   account = id（例如 20101）
+    //   class_id = grade（例如 201）
+    //   name = name（例如 王傳蓮）
+    //   role = 'student'（固定）
+    //   password_hash = NULL（學生不需要密碼）
+    const rows: string[][] = sheetsData.values;
+    const students = rows
+      .filter((r) => r[0]?.trim()) // 過濾空列
+      .map((r) => ({
+        account: r[0].trim(),       // id → account
+        class_id: r[1]?.trim() ?? null, // grade → class_id
+        name: r[3]?.trim() ?? "",   // name（第 4 欄，index 3）
+        role: "student" as const,
+        password_hash: null,
+      }));
 
-    // 讀取環境變數
-    const googleCredsRaw = Deno.env.get("GOOGLE_SHEETS_CREDENTIALS") ?? "";
-    if (!googleCredsRaw) {
-      throw new Error("Missing GOOGLE_SHEETS_CREDENTIALS");
-    }
-    let serviceAccountKey: any;
-    try {
-      serviceAccountKey = JSON.parse(googleCredsRaw);
-    } catch {
-      throw new Error("GOOGLE_SHEETS_CREDENTIALS is not valid JSON");
-    }
-
-    const spreadsheetId = Deno.env.get("STUDENT_LIST_SHEET_ID") ?? Deno.env.get("GOOGLE_SHEETS_SPREADSHEET_ID") ?? "";
-    if (!spreadsheetId) {
-      throw new Error("Missing STUDENT_LIST_SHEET_ID or GOOGLE_SHEETS_SPREADSHEET_ID");
-    }
-
-    // 驗證請求（檢查 local-rpc token）
-    const authHeader = req.headers.get("authorization") ?? "";
-    const token = authHeader.replace("Bearer ", "").trim();
-    if (!token || !token.startsWith("local-rpc:")) {
-      return new Response(JSON.stringify({ error: "unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    if (students.length === 0) {
+      throw new Error("試算表讀到 0 筆學生，請確認工作表名稱與範圍");
     }
 
-    // 讀取 Google Sheets 的 Students 工作表
-    const range = "Students!A:D";
-    const rows = await readGoogleSheet(
-      await getGoogleAccessToken(serviceAccountKey, "https://www.googleapis.com/auth/spreadsheets.readonly"),
-      spreadsheetId,
-      range
-    );
+    // 4) 寫入 Supabase（service role 略過 RLS）
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    if (!rows || rows.length < 2) {
-      throw new Error("試算表無資料或標題列格式錯誤");
-    }
-
-    // 第一列為標題列
-    const headerRow = rows[0].map((h) => String(h ?? "").trim().toLowerCase());
-    const idxId = headerRow.findIndex((h) => ["id", "account", "帳號"].includes(h));
-    const idxGrade = headerRow.findIndex((h) => ["grade", "班級", "年級", "class"].includes(h));
-    const idxName = headerRow.findIndex((h) => ["name", "姓名", "學生姓名"].includes(h));
-
-    if (idxId < 0 || idxName < 0) {
-      throw new Error("試算表標題列缺少必要欄位（至少需要 id 與 name）");
-    }
-
-    // 解析學生資料
-    const sheetStudents: { account: string; name: string; class_id: string | null }[] = [];
-    for (const row of rows.slice(1)) {
-      if (!row || row.length === 0) continue;
-      const account = String(row[idxId] ?? "").trim();
-      const name = String(row[idxName] ?? "").trim();
-      const classId = idxGrade >= 0 ? String(row[idxGrade] ?? "").trim() || null : null;
-      if (!account || !name) continue;
-      sheetStudents.push({ account, name, class_id: classId });
-    }
-
-    if (sheetStudents.length === 0) {
-      throw new Error("試算表中無有效學生資料");
-    }
-
-    // 取得目前 Supabase 中 role='student' 的現有帳號列表
-    const { data: existingStudents, error: fetchError } = await supabase
+    // 先拿目前 DB 裡所有學生的 account 清單
+    const { data: existing, error: fetchErr } = await supabase
       .from("app_users")
       .select("account")
       .eq("role", "student");
-    if (fetchError) throw fetchError;
+    if (fetchErr) throw fetchErr;
 
-    const existingAccounts = new Set((existingStudents ?? []).map((s: any) => s.account));
-    const sheetAccounts = new Set(sheetStudents.map((s) => s.account));
+    const existingAccounts = new Set((existing ?? []).map((u) => u.account));
+    const sheetAccounts = new Set(students.map((s) => s.account));
 
-    // 找出需要刪除的學生（在 DB 中但不在試算表中）
-    const accountsToDelete = [...existingAccounts].filter((a) => !sheetAccounts.has(a));
-
-    // 準備 upsert 資料
-    const upsertRows = sheetStudents.map((s) => ({
-      account: s.account,
-      role: "student" as const,
-      name: s.name,
-      class_id: s.class_id,
-      password_hash: null,
-    }));
-
-    // 執行 upsert（使用 account 作為唯一鍵值）
-    const { data: upsertedData, error: upsertError } = await supabase
+    // upsert：新增 or 更新（名字、班級可能異動）
+    const { error: upsertErr } = await supabase
       .from("app_users")
-      .upsert(upsertRows, {
-        onConflict: "account",
-      })
-      .select("account");
-    if (upsertError) throw upsertError;
+      .upsert(students, { onConflict: "account" });
+    if (upsertErr) throw upsertErr;
 
-    // 刪除畢業生（不在試算表中的學生）
-    let deletedCount = 0;
-    if (accountsToDelete.length > 0) {
-      const { data: deletedData, error: deleteError } = await supabase
+    // 刪除已畢業（在 DB 有但試算表已不存在）的學生
+    const toDelete = [...existingAccounts].filter((a) => !sheetAccounts.has(a));
+    let deleted = 0;
+    if (toDelete.length > 0) {
+      const { error: delErr } = await supabase
         .from("app_users")
         .delete()
-        .in("account", accountsToDelete)
-        .select("account");
-      if (deleteError) throw deleteError;
-      deletedCount = (deletedData ?? []).length;
+        .in("account", toDelete);
+      if (delErr) throw delErr;
+      deleted = toDelete.length;
     }
 
     return new Response(
       JSON.stringify({
         ok: true,
-        synced: sheetStudents.length,
-        upserted: (upsertedData ?? []).length,
-        deleted: deletedCount,
-        deleted_accounts: accountsToDelete,
+        synced: students.length,
+        upserted: students.length,
+        deleted,
       }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
+      { headers: { ...corsHeaders, "content-type": "application/json" } }
     );
   } catch (err: any) {
+    console.error("sync-students error:", err);
     return new Response(
-      JSON.stringify({ ok: false, error: err.message ?? String(err) }),
+      JSON.stringify({ error: err.message ?? String(err) }),
       {
         status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+        headers: { ...corsHeaders, "content-type": "application/json" },
       }
     );
   }
