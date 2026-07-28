@@ -27,6 +27,32 @@ interface ParseResult {
   books: { barcode: string; title: string; author: string | null }[];
 }
 
+// 中文班級名稱 → 班級代碼對照
+function classNameToId(name: string | null): string | null {
+  if (!name) return null;
+  const map: Record<string, string> = {
+    "一年一班": "101", "一年甲班": "101",
+    "一年二班": "102", "一年乙班": "102",
+    "一年三班": "103", "一年丙班": "103",
+    "二年一班": "201", "二年甲班": "201",
+    "二年二班": "202", "二年乙班": "202",
+    "二年三班": "203", "二年丙班": "203",
+    "三年一班": "301", "三年甲班": "301",
+    "三年二班": "302", "三年乙班": "302",
+    "三年三班": "303", "三年丙班": "303",
+    "四年一班": "401", "四年甲班": "401",
+    "四年二班": "402", "四年乙班": "402",
+    "四年三班": "403", "四年丙班": "403",
+    "五年一班": "501", "五年甲班": "501",
+    "五年二班": "502", "五年乙班": "502",
+    "五年三班": "503", "五年丙班": "503",
+    "六年一班": "601", "六年甲班": "601",
+    "六年二班": "602", "六年乙班": "602",
+    "六年三班": "603", "六年丙班": "603",
+  };
+  return map[name.trim()] ?? name;
+}
+
 function rocToISO(roc: string | null): string | null {
   if (!roc) return null;
   const [y, m, d] = roc.split("-");
@@ -229,7 +255,7 @@ Deno.serve(async (req) => {
             barcode:         b.barcode,
             title:           b.title,
             author:          b.author,
-            borrowing_class: parsed.borrowing_class,
+            borrowing_class: classNameToId(parsed.borrowing_class),
             return_date:     parsed.due_date,
             status:          "borrowed",
             borrowed_by:     null,
