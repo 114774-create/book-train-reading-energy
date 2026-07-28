@@ -46,38 +46,62 @@ function parseBoxPDF(text: string): ParseResult {
   const dueDate     = get(/應還日期\s+(\d{2,3}-\d{2}-\d{2})/);
 
   // 書單解析
+  // pdfjs 擷取出的文字可能是：
+  //   (A) 每行一個欄位：序號、登錄號、書名、作者分開在不同行
+  //   (B) 序號+登錄號貼在一起：如 "100007617" (序號1 + 登錄號00007617)
+  //   (C) 空格分隔在同一行：如 "1 00007617 今天運氣怎麼這麼好"
+  // 所以改用「在整段文字裡找所有登錄號」的方式，不依賴行結構
   const books: { barcode: string; title: string; author: string | null }[] = [];
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  let inList = false;
-  let current: { barcode: string; parts: string[] } | null = null;
 
-  const flush = () => {
-    if (!current) return;
-    const full = current.parts.join(" ").trim();
-    const sepIdx = full.lastIndexOf("；");
-    books.push({
-      barcode: current.barcode,
-      title:  sepIdx > -1 ? full.slice(0, sepIdx).trim() : full,
-      author: sepIdx > -1 ? full.slice(sepIdx + 1).trim() : null,
-    });
-    current = null;
-  };
+  // 先把整段文字接成一行，方便用正規表達式全局匹配
+  const flat = text.replace(/\n/g, " ").replace(/\s+/g, " ");
 
-  for (const line of lines) {
-    if (!inList) {
-      if (/序號/.test(line) && /登錄號/.test(line)) inList = true;
-      continue;
-    }
-    // 序號 + 登錄號（7~9碼）開頭 = 新的一本書
-    const m = line.match(/^(\d+)\s+(\d{7,9})\s*(.*)/);
-    if (m) {
-      flush();
-      current = { barcode: m[2], parts: m[3] ? [m[3]] : [] };
-    } else if (current) {
-      current.parts.push(line);
+  // 找「序號」區塊開始的位置
+  const listStart = flat.search(/序號\s*登錄號|序號.*?登錄號/);
+  const listText = listStart > -1 ? flat.slice(listStart) : flat;
+
+  // 找出所有「數字序號 + 登錄號(7~9碼數字)」的位置
+  // 登錄號特徵：7~9 碼純數字，且前面是 1~2 碼的序號數字
+  // 允許序號和登錄號之間有或沒有空格
+  const bookPattern = /\b(\d{1,2})\s{0,3}(\d{7,9})\b/g;
+  const matches: { seq: number; barcode: string; pos: number }[] = [];
+  let bm: RegExpExecArray | null;
+  while ((bm = bookPattern.exec(listText)) !== null) {
+    const seq = parseInt(bm[1], 10);
+    const barcode = bm[2];
+    // 過濾掉明顯不是書的匹配（序號要從 1 開始遞增，最多 99）
+    if (seq >= 1 && seq <= 99) {
+      matches.push({ seq, barcode, pos: bm.index + bm[0].length });
     }
   }
-  flush();
+
+  // 依序號排序，去除重複
+  const seen = new Set<number>();
+  const validMatches = matches
+    .sort((a, b) => a.seq - b.seq)
+    .filter(m => {
+      if (seen.has(m.seq)) return false;
+      seen.add(m.seq);
+      return true;
+    });
+
+  // 每本書的書名/作者 = 從這本書登錄號結束到下一本書登錄號開始之間的文字
+  for (let i = 0; i < validMatches.length; i++) {
+    const cur = validMatches[i];
+    const nextPos = validMatches[i + 1]?.pos ?? listText.length;
+    const rawContent = listText.slice(cur.pos, nextPos).trim();
+
+    // 去掉開頭可能殘留的序號數字
+    const content = rawContent.replace(/^\d{1,2}\s*/, "").trim();
+
+    const sepIdx = content.lastIndexOf("；");
+    const title = sepIdx > -1 ? content.slice(0, sepIdx).trim() : content.trim();
+    const author = sepIdx > -1 ? content.slice(sepIdx + 1).trim() : null;
+
+    if (title) {
+      books.push({ barcode: cur.barcode, title, author });
+    }
+  }
 
   return {
     box_code: boxCode,

@@ -49,7 +49,9 @@ async function pdfFileToText(file: File): Promise<string> {
       .join(" ");
     pages.push(pageText);
   }
-  return pages.join("\n");
+  const result = pages.join("\n");
+console.log("RAW TEXT:", result.slice(0, 3000));
+return result;
 }
 
 // ── 常數 ──────────────────────────────────────────────────────────────────────
