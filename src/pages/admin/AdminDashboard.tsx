@@ -141,7 +141,6 @@ export default function AdminDashboard() {
       // 1. 前端解析 PDF → 純文字
       toast.loading("擷取 PDF 文字中…", { id: t });
       const rawText = await pdfFileToText(pdf);
-      console.log("=== PDF RAW TEXT ===\n", rawText);
         throw new Error("PDF 擷取文字失敗，請確認 PDF 非掃描圖片格式");
       }
 
