@@ -46,57 +46,101 @@ function parseBoxPDF(text: string): ParseResult {
   const dueDate     = get(/應還日期\s+(\d{2,3}-\d{2}-\d{2})/);
 
   // 書單解析
-  // pdfjs 擷取出的文字可能是：
-  //   (A) 每行一個欄位：序號、登錄號、書名、作者分開在不同行
-  //   (B) 序號+登錄號貼在一起：如 "100007617" (序號1 + 登錄號00007617)
-  //   (C) 空格分隔在同一行：如 "1 00007617 今天運氣怎麼這麼好"
-  // 所以改用「在整段文字裡找所有登錄號」的方式，不依賴行結構
+  // pdfjs 實際格式：所有書連在一起，用序號+登錄號當分隔點
+  // 例如：1   00007617   今天運氣怎麼這麼好  2   00122564   印度豹大拍賣 ...
+  // 登錄號特徵：緊跟在序號(1-2碼數字)後面的 8-9 碼數字
+  // 書名和作者之間沒有固定分隔符，但作者在書名之後、下一個序號之前
   const books: { barcode: string; title: string; author: string | null }[] = [];
 
-  // 先把整段文字接成一行，方便用正規表達式全局匹配
-  const flat = text.replace(/\n/g, " ").replace(/\s+/g, " ");
+  // 找書單開始位置（序號 登錄號 書籍名稱 作者 備註 這行之後）
+  const headerMatch = text.match(/序號\s+登錄號\s+書籍名稱\s+作者/);
+  const listText = headerMatch
+    ? text.slice(text.indexOf(headerMatch[0]) + headerMatch[0].length)
+    : text;
 
-  // 找「序號」區塊開始的位置
-  const listStart = flat.search(/序號\s*登錄號|序號.*?登錄號/);
-  const listText = listStart > -1 ? flat.slice(listStart) : flat;
-
-  // 找出所有「數字序號 + 登錄號(7~9碼數字)」的位置
-  // 登錄號特徵：7~9 碼純數字，且前面是 1~2 碼的序號數字
-  // 允許序號和登錄號之間有或沒有空格
-  const bookPattern = /\b(\d{1,2})\s{0,3}(\d{7,9})\b/g;
-  const matches: { seq: number; barcode: string; pos: number }[] = [];
+  // 用正規表達式找出所有「序號 + 登錄號」的位置
+  // 序號是 1~30 的數字，登錄號是 7~9 碼數字
+  const bookPattern = /\b(\d{1,2})\s+(\d{7,9})\s+/g;
+  const matches: { seq: number; barcode: string; contentStart: number }[] = [];
   let bm: RegExpExecArray | null;
+
   while ((bm = bookPattern.exec(listText)) !== null) {
     const seq = parseInt(bm[1], 10);
     const barcode = bm[2];
-    // 過濾掉明顯不是書的匹配（序號要從 1 開始遞增，最多 99）
     if (seq >= 1 && seq <= 99) {
-      matches.push({ seq, barcode, pos: bm.index + bm[0].length });
+      matches.push({
+        seq,
+        barcode,
+        contentStart: bm.index + bm[0].length,
+      });
     }
   }
 
-  // 依序號排序，去除重複
+  // 去重（同序號只保留第一個）
   const seen = new Set<number>();
-  const validMatches = matches
-    .sort((a, b) => a.seq - b.seq)
-    .filter(m => {
-      if (seen.has(m.seq)) return false;
-      seen.add(m.seq);
-      return true;
-    });
+  const validMatches = matches.filter(m => {
+    if (seen.has(m.seq)) return false;
+    seen.add(m.seq);
+    return true;
+  }).sort((a, b) => a.seq - b.seq);
 
-  // 每本書的書名/作者 = 從這本書登錄號結束到下一本書登錄號開始之間的文字
+  // 每本書的內容 = 從 contentStart 到下一本書的「序號+登錄號」開始前
   for (let i = 0; i < validMatches.length; i++) {
     const cur = validMatches[i];
-    const nextPos = validMatches[i + 1]?.pos ?? listText.length;
-    const rawContent = listText.slice(cur.pos, nextPos).trim();
+    const nextMatchStart = i + 1 < validMatches.length
+      ? listText.indexOf(
+          String(validMatches[i + 1].seq) + "   " + validMatches[i + 1].barcode,
+          cur.contentStart
+        )
+      : -1;
 
-    // 去掉開頭可能殘留的序號數字
-    const content = rawContent.replace(/^\d{1,2}\s*/, "").trim();
+    const rawContent = nextMatchStart > -1
+      ? listText.slice(cur.contentStart, nextMatchStart).trim()
+      : listText.slice(cur.contentStart).trim();
 
-    const sepIdx = content.lastIndexOf("；");
-    const title = sepIdx > -1 ? content.slice(0, sepIdx).trim() : content.trim();
-    const author = sepIdx > -1 ? content.slice(sepIdx + 1).trim() : null;
+    // 清除結尾殘留的「備註」欄位空白或頁首文字
+    const content = rawContent
+      .replace(/臺南市東山區青山國民小學圖書館.*$/s, "")
+      .replace(/\s{3,}/g, "  ") // 多個空白壓縮成兩個
+      .trim();
+
+    if (!content) continue;
+
+    // 書名和作者的分隔：
+    // 作者欄通常包含「文」「圖」「譯」「作」「繪」等字，或外國人名括號
+    // 用兩個以上空格或「；」來分隔書名和作者
+    const sepMatch = content.match(/\s{2,}(?=[^\s])/);
+    let title = content;
+    let author: string | null = null;
+
+    if (sepMatch && sepMatch.index !== undefined) {
+      const candidate = content.slice(0, sepMatch.index).trim();
+      const rest = content.slice(sepMatch.index).trim();
+      // 如果後半部像是作者（含文/圖/譯/作/繪/；）就切開
+      if (rest && /[文圖譯作繪；]/.test(rest)) {
+        title = candidate;
+        author = rest;
+      }
+    }
+
+    // 如果有 ；分隔符，優先用它
+    const semiIdx = content.indexOf("；");
+    if (semiIdx > -1) {
+      // 找最後一個適合分割的位置前的書名
+      const beforeSemi = content.slice(0, semiIdx).trim();
+      // 書名不應該太短，且分號後面應該有內容
+      if (beforeSemi.length > 1 && semiIdx < content.length - 1) {
+        // 從最後一個「  」（兩空格）之前找書名邊界
+        const lastDoubleSpace = beforeSemi.lastIndexOf("  ");
+        if (lastDoubleSpace > 0) {
+          title = beforeSemi.slice(0, lastDoubleSpace).trim();
+          author = content.slice(lastDoubleSpace).trim();
+        } else {
+          title = beforeSemi;
+          author = content.slice(semiIdx + 1).trim();
+        }
+      }
+    }
 
     if (title) {
       books.push({ barcode: cur.barcode, title, author });
