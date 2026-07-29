@@ -227,7 +227,7 @@ Deno.serve(async (req) => {
         book_count:      parsed.book_count,
         borrow_date:     parsed.borrow_date,
         due_date:        parsed.due_date,
-        status:          "borrowed",
+        status:          "available",
       })
       .select("id")
       .single();
@@ -245,9 +245,8 @@ Deno.serve(async (req) => {
             author:          b.author,
             borrowing_class: classNameToId(parsed.borrowing_class),
             return_date:     parsed.due_date,
-            status:          "borrowed",
+            status:          "available",
             borrowed_by:     null,
-            borrowed_at:     new Date().toISOString(),
             box_code:        parsed.box_code,
             box_name:        parsed.box_name,
           })),
