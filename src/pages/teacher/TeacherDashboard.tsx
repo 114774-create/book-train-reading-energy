@@ -140,10 +140,9 @@ export default function TeacherDashboard() {
         if (error) throw error;
       }
 
-      // 寫入 borrow_logs（student_id 先存 null，用 barcode + borrowed_by 追蹤）
+      // 寫入 borrow_logs（student_id 為 uuid 型別先略過，只記 barcode + action）
       const logRows = targets.map((book) => ({
         barcode: book.barcode,
-        student_id: null,
         action: "borrow",
         at: now,
       }));
@@ -184,7 +183,6 @@ export default function TeacherDashboard() {
 
       const logRows = targets.map((book) => ({
         barcode: book.barcode,
-        student_id: null,
         action: "return",
         at: now,
       }));
@@ -299,10 +297,10 @@ export default function TeacherDashboard() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">勾選</TableHead>
+                    <TableHead className="w-44">借給學生</TableHead>
                     <TableHead>登錄號</TableHead>
                     <TableHead>書名</TableHead>
                     <TableHead>作者</TableHead>
-                    <TableHead className="w-44">借給學生</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -319,9 +317,6 @@ export default function TeacherDashboard() {
                           className="h-4 w-4 rounded border-gray-300"
                         />
                       </TableCell>
-                      <TableCell className="font-mono text-sm">{book.barcode}</TableCell>
-                      <TableCell>{book.title}</TableCell>
-                      <TableCell className="text-sm text-muted-foreground">{book.author ?? ""}</TableCell>
                       <TableCell>
                         <select
                           className="h-8 w-full rounded-md border bg-background px-2 text-sm"
@@ -329,7 +324,6 @@ export default function TeacherDashboard() {
                           onChange={(e) => {
                             const val = e.target.value;
                             setSelectedBorrower((prev) => ({ ...prev, [book.barcode]: val }));
-                            // 選了學生就自動勾選
                             if (val) {
                               setBorrowSelected((prev) => new Set([...prev, book.barcode]));
                             }
@@ -343,6 +337,9 @@ export default function TeacherDashboard() {
                           ))}
                         </select>
                       </TableCell>
+                      <TableCell className="font-mono text-sm">{book.barcode}</TableCell>
+                      <TableCell>{book.title}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{book.author ?? ""}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
