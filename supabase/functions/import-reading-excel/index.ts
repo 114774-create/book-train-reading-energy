@@ -1,16 +1,16 @@
-//
 // import-reading-excel: 從前端上傳的 Excel 檔案（base64）解析學生閱讀月報並寫入 DB
 //
 // Excel 格式（工作表名稱：學生閱讀能量統計）：
-//   學年度 | 年 | 月 | 學生姓名 | 年級 | 班級 | 座號 | 本月挖掘能量 | 本月挖掘本數 | 等級 | 學生挖掘總能量 | 學生挖掘總本數 | 本學期累積能量 | 本學期累積挖掘本數
+//   學年度 | 年 | 月 | 學生姓名 | 年級 | 班級 | 座號 | 本月挖掘能量 | 本月挖掘本數 |
+//   等級 | 學生挖掘總能量 | 學生挖掘總本數 | 本學期累積能量 | 本學期累積挖掘本數
 //
 // 比對邏輯：
-//   account = 年級 + 座號（例如 年級=201、座號=01 → account=20101）
-//   對應 app_users 中的 account
+//   account = 年級(3碼) + 座號(2碼補0) → 例如 年級=201、座號=1 → account=20101
+//   對應 app_users.account
 //
-// 需要的 Secret：SERVICE_ROLE_KEY（因 Supabase 不允許 SUPABASE_ 開頭）
-// SUPABASE_URL 為內建環境變數
-//
+// 寫入目標：
+//   app_reading_monthly → 每人每月一筆 (account, year_month)
+//   app_reading_totals  → 每人累積總計 (account)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -25,12 +25,6 @@ const corsHeaders = {
 
 const SUPABASE = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-// 民國年 → 西元年
-function rocToWestern(rocYear: number): number {
-  return rocYear + 1911;
-}
-
-// 將字串安全地轉為數字（先 trim 再轉）
 function safeParseInt(s: any): number | null {
   const trimmed = String(s ?? "").trim();
   const n = parseInt(trimmed, 10);
@@ -40,20 +34,19 @@ function safeParseInt(s: any): number | null {
 interface ParsedRow {
   account: string;
   name: string;
-  energy: number;
-  books: number;
+  class_id: string;
+  monthly_energy: number;
+  monthly_books: number;
   total_energy: number;
   total_books: number;
 }
 
 Deno.serve(async (req) => {
-  // CORS preflight
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    // 驗證請求（檢查 local-rpc token）
     const authHeader = req.headers.get("authorization") ?? "";
     const token = authHeader.replace("Bearer ", "").trim();
     if (!token || !token.startsWith("local-rpc:")) {
@@ -64,7 +57,7 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json();
-    const { file_name, file_base64, target_year_month } = body;
+    const { file_base64, target_year_month } = body;
 
     if (!file_base64) {
       return new Response(
@@ -80,20 +73,15 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 解析 Excel（使用 SheetJS / xlsx CDN）
+    // 解析 Excel
     const xlsx = await import("https://esm.sh/xlsx@0.18.5");
-
     const binary = Uint8Array.from(atob(file_base64), (c) => c.charCodeAt(0));
     const wb = xlsx.read(binary, { type: "array" });
 
-    // 嘗試找到「學生閱讀能量統計」工作表，否則使用第一個
-    let ws;
-    const targetSheet = wb.SheetNames.find((n) => n.includes("學生閱讀能量統計") || n.includes("能量統計"));
-    if (targetSheet) {
-      ws = wb.Sheets[targetSheet];
-    } else {
-      ws = wb.Sheets[wb.SheetNames[0]];
-    }
+    const targetSheet = wb.SheetNames.find(
+      (n: string) => n.includes("學生閱讀能量統計") || n.includes("能量統計")
+    ) ?? wb.SheetNames[0];
+    const ws = wb.Sheets[targetSheet];
 
     if (!ws) {
       return new Response(
@@ -102,7 +90,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 讀取所有資料
     const aoa = xlsx.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" }) as any[][];
     if (aoa.length < 2) {
       return new Response(
@@ -111,159 +98,147 @@ Deno.serve(async (req) => {
       );
     }
 
-    // 解析標題列（normalize：去除空白）
-    const headerRow = aoa[0].map((h) => String(h ?? "").replace(/\s+/g, "").trim());
+    // 標題列（去除空白）
+    const headerRow = aoa[0].map((h: any) => String(h ?? "").replace(/\s+/g, "").trim());
 
-    // 欄位索引
-    const idxYear = headerRow.findIndex((h) => h === "年" || h === "year");
-    const idxMonth = headerRow.findIndex((h) => h === "月" || h === "month");
-    const idxName = headerRow.findIndex((h) => h.includes("姓名") || h.toLowerCase().includes("name"));
-    const idxGrade = headerRow.findIndex((h) => h.includes("年級") || h === "grade");
-    const idxSeat = headerRow.findIndex((h) => h.includes("座號") || h.includes("number") || h.includes("座") || h === "number");
-    const idxEnergy = headerRow.findIndex((h) => h.includes("本月挖掘能量") || h.includes("能量") || h.includes("energy"));
-    const idxBooks = headerRow.findIndex((h) => h.includes("本月挖掘本數") || h.includes("本數") || h.includes("books"));
-    const idxTotalEnergy = headerRow.findIndex((h) => h.includes("總能量") || h.includes("total_energy"));
-    const idxTotalBooks = headerRow.findIndex((h) => h.includes("總本數") || h.includes("total_books"));
+    const idxYear        = headerRow.findIndex((h: string) => h === "年");
+    const idxMonth       = headerRow.findIndex((h: string) => h === "月");
+    const idxName        = headerRow.findIndex((h: string) => h.includes("姓名"));
+    const idxGrade       = headerRow.findIndex((h: string) => h.includes("年級"));
+    const idxSeat        = headerRow.findIndex((h: string) => h.includes("座號"));
+    const idxEnergy      = headerRow.findIndex((h: string) => h.includes("本月挖掘能量"));
+    const idxBooks       = headerRow.findIndex((h: string) => h.includes("本月挖掘本數"));
+    const idxTotalEnergy = headerRow.findIndex((h: string) => h.includes("學生挖掘總能量"));
+    const idxTotalBooks  = headerRow.findIndex((h: string) => h.includes("學生挖掘總本數"));
 
     if (idxGrade < 0 || idxSeat < 0 || idxName < 0) {
       return new Response(
-        JSON.stringify({ ok: false, error: "找不到必要欄位：年級、座號、姓名" }),
+        JSON.stringify({ ok: false, error: `找不到必要欄位（年級/座號/姓名）。標題列：${headerRow.join("、")}` }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    if (idxYear < 0 || idxMonth < 0) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "找不到必要欄位：年、月" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // 解析資料列
+    // 解析每列
     const parsedRows: ParsedRow[] = [];
     const notFoundNames: { name: string; account: string }[] = [];
-    const fileAccounts = new Set<string>();
-    const fileYearMonth: string[] = [];
+    const fileYms: string[] = [];
 
     for (const row of aoa.slice(1)) {
-      if (!row || row.length === 0) continue;
+      if (!row || row.every((c: any) => String(c ?? "").trim() === "")) continue;
 
-      const rocYear = safeParseInt(row[idxYear]);
-      const month = safeParseInt(row[idxMonth]);
-      const grade = String(row[idxGrade] ?? "").trim();
-      const seat = String(row[idxSeat] ?? "").trim().padStart(2, "0");
-      const name = String(row[idxName] ?? "").trim();
-      const energy = safeParseInt(row[idxEnergy]) ?? 0;
-      const books = safeParseInt(row[idxBooks]) ?? 0;
-      const totalEnergy = safeParseInt(row[idxTotalEnergy]) ?? energy;
-      const totalBooks = safeParseInt(row[idxTotalBooks]) ?? books;
+      const rocYear = idxYear >= 0 ? safeParseInt(row[idxYear]) : null;
+      const month   = idxMonth >= 0 ? safeParseInt(row[idxMonth]) : null;
+      const grade   = String(row[idxGrade] ?? "").trim();
+      const seatRaw = safeParseInt(row[idxSeat]);
+      const seat    = seatRaw !== null ? String(seatRaw).padStart(2, "0") : "";
+      const name    = String(row[idxName] ?? "").trim();
 
       if (!grade || !seat || !name) continue;
 
-      // account = 年級 + 座號
-      const account = grade + seat;
-      fileAccounts.add(account);
+      const account = grade + seat; // 例如 20101
 
-      // 計算檔案中的年月（民國年 + 1911 = 西元年）
+      const monthlyEnergy = safeParseInt(row[idxEnergy]) ?? 0;
+      const monthlyBooks  = safeParseInt(row[idxBooks]) ?? 0;
+      // 優先用 Excel 的總計欄，若沒有則先用月份值（之後 upsert 會累加）
+      const totalEnergy = idxTotalEnergy >= 0 ? (safeParseInt(row[idxTotalEnergy]) ?? monthlyEnergy) : monthlyEnergy;
+      const totalBooks  = idxTotalBooks  >= 0 ? (safeParseInt(row[idxTotalBooks])  ?? monthlyBooks)  : monthlyBooks;
+
+      // 記錄檔案裡的年月（民國年 + 1911）
       if (rocYear !== null && month !== null) {
-        const westernYear = rocToWestern(rocYear);
-        const fileYm = `${westernYear}-${String(month).padStart(2, "0")}`;
-        fileYearMonth.push(fileYm);
+        fileYms.push(`${rocYear + 1911}-${String(month).padStart(2, "0")}`);
       }
 
-      // 在 app_users 中查找該 account
-      const { data: userData } = await SUPABASE
+      // 查 app_users 確認學生存在
+      const { data: user } = await SUPABASE
         .from("app_users")
         .select("account, name, class_id")
         .eq("account", account)
-        .limit(1)
-        .single();
+        .eq("role", "student")
+        .maybeSingle();
 
-      if (!userData) {
-        // 嘗試用姓名模糊比對
-        const { data: nameMatch } = await SUPABASE
+      if (!user) {
+        // 嘗試用姓名比對
+        const { data: byName } = await SUPABASE
           .from("app_users")
           .select("account, name, class_id")
           .eq("name", name)
           .eq("role", "student")
-          .limit(1)
-          .single();
+          .maybeSingle();
 
-        if (!nameMatch) {
+        if (!byName) {
           notFoundNames.push({ name, account });
           continue;
         }
-        // 用找到的 account
         parsedRows.push({
-          account: nameMatch.account,
-          name: nameMatch.name,
-          energy,
-          books,
+          account: byName.account,
+          name: byName.name,
+          class_id: byName.class_id ?? grade,
+          monthly_energy: monthlyEnergy,
+          monthly_books: monthlyBooks,
           total_energy: totalEnergy,
           total_books: totalBooks,
         });
       } else {
         parsedRows.push({
-          account: userData.account,
-          name: userData.name,
-          energy,
-          books,
+          account: user.account,
+          name: user.name,
+          class_id: user.class_id ?? grade,
+          monthly_energy: monthlyEnergy,
+          monthly_books: monthlyBooks,
           total_energy: totalEnergy,
           total_books: totalBooks,
         });
       }
     }
 
-    if (parsedRows.length === 0 && notFoundNames.length === 0) {
-      return new Response(
-        JSON.stringify({ ok: false, error: "Excel 中無有效資料列" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
-    }
-
-    // 檢查檔案中的年月與前端輸入的年月是否一致
-    const fileYmCounts = fileYearMonth.reduce((acc, ym) => {
+    // 檢查年月是否與前端輸入一致
+    const ymCounts = fileYms.reduce((acc, ym) => {
       acc[ym] = (acc[ym] || 0) + 1;
       return acc;
     }, {} as Record<string, number>);
-
-    const mostCommonYm = Object.entries(fileYmCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    const mostCommonYm = Object.entries(ymCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
     const ymMismatch = mostCommonYm && mostCommonYm !== target_year_month;
 
-    // 批次 upsert 到 reading_monthly
-    const monthlyRows = parsedRows.map((r) => ({
-      student_no: r.account,
-      account: r.account,
-      name: r.name,
-      year_month: target_year_month,
-      energy: r.energy,
-      books: r.books,
-      class_id: null, // 會從 app_users 帶入
-    }));
+    const now = new Date().toISOString();
 
-    if (monthlyRows.length > 0) {
+    // 寫入 app_reading_monthly（每人每月一筆）
+    if (parsedRows.length > 0) {
+      const monthlyRows = parsedRows.map((r) => ({
+        account:    r.account,
+        name:       r.name,
+        class_id:   r.class_id,
+        year_month: target_year_month,
+        energy:     r.monthly_energy,
+        books:      r.monthly_books,
+        updated_at: now,
+      }));
+
       const { error: monthlyErr } = await SUPABASE
-        .from("reading_monthly")
+        .from("app_reading_monthly")
         .upsert(monthlyRows, { onConflict: "account,year_month" });
+
       if (monthlyErr) {
-        console.error("reading_monthly upsert error:", monthlyErr);
+        console.error("app_reading_monthly upsert error:", monthlyErr);
+        throw new Error("寫入月報失敗：" + monthlyErr.message);
       }
     }
 
-    // 批次 upsert 到 reading_totals
-    const totalRows = parsedRows.map((r) => ({
-      student_id: r.account,
-      total_energy: r.total_energy,
-      total_books: r.total_books,
-      updated_at: new Date().toISOString(),
-    }));
+    // 寫入 app_reading_totals（累積總計）
+    if (parsedRows.length > 0) {
+      const totalRows = parsedRows.map((r) => ({
+        account:      r.account,
+        total_energy: r.total_energy,
+        total_books:  r.total_books,
+        updated_at:   now,
+      }));
 
-    if (totalRows.length > 0) {
       const { error: totalErr } = await SUPABASE
-        .from("reading_totals")
-        .upsert(totalRows, { onConflict: "student_id" });
+        .from("app_reading_totals")
+        .upsert(totalRows, { onConflict: "account" });
+
       if (totalErr) {
-        console.error("reading_totals upsert error:", totalErr);
+        console.error("app_reading_totals upsert error:", totalErr);
+        throw new Error("寫入累積資料失敗：" + totalErr.message);
       }
     }
 
@@ -272,10 +247,13 @@ Deno.serve(async (req) => {
         ok: true,
         processed: parsedRows.length,
         not_found: notFoundNames,
-        ym_mismatch: ymMismatch ? { file_ym: mostCommonYm, target_ym: target_year_month } : null,
+        ym_mismatch: ymMismatch
+          ? { file_ym: mostCommonYm, target_ym: target_year_month }
+          : null,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
+
   } catch (err: any) {
     console.error("import-reading-excel error:", err);
     return new Response(

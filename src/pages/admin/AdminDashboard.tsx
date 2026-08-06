@@ -13,6 +13,7 @@ import { getSession } from "@/lib/customAuth";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
+import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
 // Vite 環境下用 ?url 匯入 worker
@@ -49,9 +50,7 @@ async function pdfFileToText(file: File): Promise<string> {
       .join(" ");
     pages.push(pageText);
   }
-  const result = pages.join("\n");
-console.log("RAW TEXT:", result.slice(0, 3000));
-return result;
+  return pages.join("\n");
 }
 
 // ── 常數 ──────────────────────────────────────────────────────────────────────
@@ -554,10 +553,11 @@ export default function AdminDashboard() {
       </div>
 
       <Tabs defaultValue="pdf">
-        <TabsList className="grid grid-cols-6 w-full max-w-5xl">
+        <TabsList className="grid grid-cols-7 w-full max-w-5xl">
           <TabsTrigger value="pdf">PDF 書箱匯入</TabsTrigger>
           <TabsTrigger value="excel">Excel 月報匯入</TabsTrigger>
           <TabsTrigger value="users">人事管理</TabsTrigger>
+          <TabsTrigger value="energy">學生能量</TabsTrigger>
           <TabsTrigger value="rank">每月排行榜</TabsTrigger>
           <TabsTrigger value="export">匯出/圖表</TabsTrigger>
           <TabsTrigger value="events">主題活動</TabsTrigger>
@@ -891,6 +891,10 @@ export default function AdminDashboard() {
               </Dialog>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="energy" className="mt-4">
+          <StudentEnergyTab />
         </TabsContent>
 
         <TabsContent value="rank" className="mt-4">
