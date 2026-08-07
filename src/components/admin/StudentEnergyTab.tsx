@@ -30,50 +30,28 @@ export function StudentEnergyTab() {
   async function load() {
     setLoading(true);
     try {
-      // 從 app_reading_totals join app_users 取得班級資訊
-      const { data, error } = await supabase
-        .from("app_reading_totals")
-        .select("account, total_energy, total_books, app_users!inner(name, class_id)")
-        .order("total_energy", { ascending: false });
+      const [{ data: totals, error: totalsErr }, { data: users, error: usersErr }] = await Promise.all([
+        supabase.from("app_reading_totals").select("account, total_energy, total_books"),
+        supabase.from("app_users").select("account, name, class_id").eq("role", "student"),
+      ]);
 
-      if (error) throw error;
+      if (totalsErr) throw totalsErr;
+      if (usersErr) throw usersErr;
 
-      const mapped: EnergyRow[] = (data ?? []).map((r: any) => ({
-        account:      r.account,
-        name:         r.app_users?.name ?? "",
-        class_id:     r.app_users?.class_id ?? null,
-        total_energy: r.total_energy ?? 0,
-        total_books:  r.total_books ?? 0,
-      }));
-
+      const userMap = new Map((users ?? []).map((u: any) => [u.account, u]));
+      const mapped: EnergyRow[] = (totals ?? []).map((r: any) => {
+        const u = userMap.get(r.account);
+        return {
+          account:      r.account,
+          name:         u?.name ?? r.account,
+          class_id:     u?.class_id ?? null,
+          total_energy: r.total_energy ?? 0,
+          total_books:  r.total_books ?? 0,
+        };
+      });
       setRows(mapped);
     } catch (e: any) {
-      // fallback：直接查 app_reading_totals，再從 app_users 補名字
-      try {
-        const { data: totals } = await supabase
-          .from("app_reading_totals")
-          .select("account, total_energy, total_books");
-
-        const { data: users } = await supabase
-          .from("app_users")
-          .select("account, name, class_id")
-          .eq("role", "student");
-
-        const userMap = new Map((users ?? []).map((u: any) => [u.account, u]));
-        const mapped: EnergyRow[] = (totals ?? []).map((r: any) => {
-          const u = userMap.get(r.account);
-          return {
-            account:      r.account,
-            name:         u?.name ?? r.account,
-            class_id:     u?.class_id ?? null,
-            total_energy: r.total_energy ?? 0,
-            total_books:  r.total_books ?? 0,
-          };
-        });
-        setRows(mapped);
-      } catch (e2: any) {
-        toast.error("讀取能量資料失敗：" + String(e2?.message ?? e2));
-      }
+      toast.error("讀取能量資料失敗：" + String(e?.message ?? e));
     } finally {
       setLoading(false);
     }

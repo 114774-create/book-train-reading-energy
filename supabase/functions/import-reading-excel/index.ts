@@ -205,12 +205,11 @@ Deno.serve(async (req) => {
     if (parsedRows.length > 0) {
       const monthlyRows = parsedRows.map((r) => ({
         account:    r.account,
-        name:       r.name,
-        class_id:   r.class_id,
         year_month: target_year_month,
-        energy:     r.monthly_energy,
-        books:      r.monthly_books,
-        updated_at: now,
+        energy_added: r.monthly_energy,
+        books_added:  r.monthly_books,
+        cards_earned: Math.floor(r.total_energy / 500),
+        created_at: now,
       }));
 
       const { error: monthlyErr } = await SUPABASE
