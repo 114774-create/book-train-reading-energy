@@ -117,6 +117,7 @@ export default function AdminDashboard() {
   const [boxLoans, setBoxLoans] = useState<any[]>([]);
   const [pdfImportResult, setPdfImportResult] = useState<any>(null);
   const [excelImportResult, setExcelImportResult] = useState<any>(null);
+  const [importHistory, setImportHistory] = useState<{ym: string; processed: number; not_found: number; at: string}[]>([]);
   const [returningBox, setReturningBox] = useState<number | null>(null);
 
   const ymDefault = useMemo(() => {
@@ -257,6 +258,11 @@ export default function AdminDashboard() {
 
       setExcelImportResult(data);
       setPdfImportResult(null);
+      // 加入匯入歷史
+      setImportHistory(prev => {
+        const filtered = prev.filter(h => h.ym !== ym); // 覆蓋同月份
+        return [{ ym, processed: data.processed ?? 0, not_found: (data.not_found ?? []).length, at: new Date().toLocaleString("zh-TW") }, ...filtered];
+      });
 
       const missingCount = (data.not_found ?? []).length;
       if (missingCount > 0) {
@@ -503,16 +509,32 @@ export default function AdminDashboard() {
       const classes: any = {};
       for (const c of CLASS_CODES) {
         const { data, error } = await supabase
-          .from("reading_monthly")
-          .select("student_no, name, energy, books")
+          .from("app_reading_monthly")
+          .select("account, energy_added, books_added")
           .eq("year_month", ym)
-          .eq("class_id", c)
-          .gte("books", 2)
-          .order("energy", { ascending: false })
-          .order("books", { ascending: false })
+          .gte("books_added", 2)
+          .order("energy_added", { ascending: false })
+          .order("books_added", { ascending: false })
           .limit(5);
         if (error) throw error;
-        classes[c] = data ?? [];
+        // 補上學生姓名
+        const accounts = (data ?? []).map((r: any) => r.account);
+        let nameMap: Record<string, {name: string; class_id: string}> = {};
+        if (accounts.length > 0) {
+          const { data: users } = await supabase
+            .from("app_users")
+            .select("account, name, class_id")
+            .in("account", accounts);
+          (users ?? []).forEach((u: any) => { nameMap[u.account] = u; });
+        }
+        classes[c] = (data ?? [])
+          .filter((r: any) => (nameMap[r.account]?.class_id ?? "") === c)
+          .map((r: any) => ({
+            student_no: r.account,
+            name: nameMap[r.account]?.name ?? r.account,
+            energy: r.energy_added,
+            books: r.books_added,
+          }));
       }
       setLeaderboard({ ok: true, year_month: ym, classes });
     } catch (e: any) {
@@ -999,27 +1021,39 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
     setLoading(true);
     try {
       const { data, error } = await supabase
-        .from("reading_monthly")
-        .select("student_no, class_id, name, energy, books, year_month")
+        .from("app_reading_monthly")
+        .select("account, energy_added, books_added, year_month")
         .gte("year_month", range.start)
         .lte("year_month", range.end);
       if (error) throw error;
 
+      // 補上學生姓名和班級
+      const accounts = [...new Set((data ?? []).map((r: any) => r.account))];
+      let userMap2: Record<string, {name: string; class_id: string}> = {};
+      if (accounts.length > 0) {
+        const { data: users } = await supabase
+          .from("app_users")
+          .select("account, name, class_id")
+          .in("account", accounts as string[]);
+        (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
+      }
+
       const map = new Map<string, any>();
       for (const r of (data as any[]) ?? []) {
-        const k = String(r.student_no);
+        const k = String(r.account);
+        const u = userMap2[k];
         const prev = map.get(k) ?? {
           student_no: k,
           account: k,
-          name: r.name ?? "",
-          class_id: r.class_id ?? null,
+          name: u?.name ?? k,
+          class_id: u?.class_id ?? null,
           total_energy: 0,
           total_books: 0,
         };
-        prev.total_energy += Number(r.energy ?? 0) || 0;
-        prev.total_books += Number(r.books ?? 0) || 0;
-        if (r.name) prev.name = r.name;
-        if (r.class_id) prev.class_id = r.class_id;
+        prev.total_energy += Number(r.energy_added ?? 0) || 0;
+        prev.total_books += Number(r.books_added ?? 0) || 0;
+        if (u?.name) prev.name = u.name;
+        if (u?.class_id) prev.class_id = u.class_id;
         map.set(k, prev);
       }
 
