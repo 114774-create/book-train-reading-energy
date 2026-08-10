@@ -506,35 +506,40 @@ export default function AdminDashboard() {
     if (!/^\d{4}-\d{2}$/.test(ym)) return toast.error("月份格式需為 YYYY-MM");
     setLoading(true);
     try {
+      // 一次取全部該月資料，再到 JS 層依班級分組
+      const { data: monthlyData, error } = await supabase
+        .from("app_reading_monthly")
+        .select("account, energy_added, books_added")
+        .eq("year_month", ym)
+        .gte("books_added", 2)
+        .order("energy_added", { ascending: false })
+        .order("books_added", { ascending: false });
+      if (error) throw error;
+
+      // 補學生姓名和班級
+      const accounts = (monthlyData ?? []).map((r: any) => r.account);
+      let nameMap: Record<string, {name: string; class_id: string}> = {};
+      if (accounts.length > 0) {
+        const { data: users } = await supabase
+          .from("app_users")
+          .select("account, name, class_id")
+          .in("account", accounts);
+        (users ?? []).forEach((u: any) => { nameMap[u.account] = u; });
+      }
+
+      const allRows = (monthlyData ?? []).map((r: any) => ({
+        student_no: r.account,
+        name: nameMap[r.account]?.name ?? r.account,
+        class_id: nameMap[r.account]?.class_id ?? "",
+        energy: r.energy_added,
+        books: r.books_added,
+      }));
+
       const classes: any = {};
       for (const c of CLASS_CODES) {
-        const { data, error } = await supabase
-          .from("app_reading_monthly")
-          .select("account, energy_added, books_added")
-          .eq("year_month", ym)
-          .gte("books_added", 2)
-          .order("energy_added", { ascending: false })
-          .order("books_added", { ascending: false })
-          .limit(5);
-        if (error) throw error;
-        // 補上學生姓名
-        const accounts = (data ?? []).map((r: any) => r.account);
-        let nameMap: Record<string, {name: string; class_id: string}> = {};
-        if (accounts.length > 0) {
-          const { data: users } = await supabase
-            .from("app_users")
-            .select("account, name, class_id")
-            .in("account", accounts);
-          (users ?? []).forEach((u: any) => { nameMap[u.account] = u; });
-        }
-        classes[c] = (data ?? [])
-          .filter((r: any) => (nameMap[r.account]?.class_id ?? "") === c)
-          .map((r: any) => ({
-            student_no: r.account,
-            name: nameMap[r.account]?.name ?? r.account,
-            energy: r.energy_added,
-            books: r.books_added,
-          }));
+        classes[c] = allRows
+          .filter((r: any) => r.class_id === c)
+          .slice(0, 5);
       }
       setLeaderboard({ ok: true, year_month: ym, classes });
     } catch (e: any) {
@@ -732,6 +737,45 @@ export default function AdminDashboard() {
               )}
             </CardContent>
           </Card>
+
+          {importHistory.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-base">📋 本次登入的匯入紀錄</CardTitle>
+                <CardDescription>同月份重複匯入會自動覆蓋原資料</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>年月</TableHead>
+                        <TableHead className="text-right">處理筆數</TableHead>
+                        <TableHead className="text-right">未找到學生</TableHead>
+                        <TableHead>匯入時間</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {importHistory.map((h) => (
+                        <TableRow key={h.ym}>
+                          <TableCell className="font-mono font-medium">{h.ym}</TableCell>
+                          <TableCell className="text-right font-medium">{h.processed}</TableCell>
+                          <TableCell className="text-right">
+                            {h.not_found > 0 ? (
+                              <span className="text-red-600 font-medium">{h.not_found}</span>
+                            ) : (
+                              <span className="text-green-600">0 ✓</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-sm text-muted-foreground">{h.at}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="users" className="mt-4">
@@ -1074,23 +1118,143 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   }
 
   async function exportExcel() {
-    const { downloadXlsx } = await import("@/lib/exporters");
     const data = selectedClass === "all" ? rows : rows.filter((r) => r.class_id === selectedClass);
     if (!data.length) return toast.error("沒有資料可匯出");
 
+    const XLSX = await import("xlsx");
     const semLabel = semester === "year" ? "全學年" : semester === "first" ? "上學期" : "下學期";
     const filename = `布可列車_${rocYear}學年度_${semLabel}_${selectedClass === "all" ? "全校" : selectedClass}.xlsx`;
 
-    const sheetRows = data.map((r) => ({
-      學號: r.student_no,
-      姓名: r.name,
-      班級: r.class_id,
-      能量: r.total_energy,
-      本數: r.total_books,
-      榮譽卡: Math.floor((r.total_energy ?? 0) / 500),
-    }));
+    // 右上角日期
+    const now = new Date();
+    const dateLabel = `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,"0")}`;
 
-    downloadXlsx(filename, [{ name: "總紀錄", rows: sheetRows }]);
+    // 能量刻度：500, 1000, ... 到最大值以上
+    const maxEnergy = Math.max(...data.map(r => r.total_energy ?? 0), 500);
+    const maxTick = Math.ceil(maxEnergy / 500) * 500;
+    const ticks: number[] = [];
+    for (let t = 500; t <= maxTick; t += 500) ticks.push(t);
+
+    // 年級顏色對應（ARGB格式，xlsx用）
+    const classColors: Record<string, string> = {
+      "101": "FFFFD7D7", // 淡紅
+      "102": "FFFFD7D7",
+      "103": "FFFFD7D7",
+      "201": "FFFFD7B0", // 淡橘
+      "202": "FFFFD7B0",
+      "203": "FFFFD7B0",
+      "301": "FFFFFF99", // 淡黃
+      "302": "FFFFFF99",
+      "303": "FFFFFF99",
+      "401": "FFD7F5C0", // 淡綠
+      "402": "FFD7F5C0",
+      "403": "FFD7F5C0",
+      "501": "FFC0E8FF", // 淡藍
+      "502": "FFC0E8FF",
+      "503": "FFC0E8FF",
+      "601": "FFE8C0FF", // 淡紫
+      "602": "FFE8C0FF",
+      "603": "FFE8C0FF",
+    };
+
+    // 遮蔽姓名（第2個字改為○）
+    function maskName(name: string) {
+      const s = name.trim();
+      if (s.length <= 1) return s;
+      if (s.length === 2) return s[0] + "○";
+      return s[0] + "○" + s[s.length - 1];
+    }
+
+    // 排序：依班級代碼，再依帳號（座號）
+    const sorted = [...data].sort((a, b) => {
+      const cmp = String(a.class_id ?? "").localeCompare(String(b.class_id ?? ""));
+      if (cmp !== 0) return cmp;
+      return String(a.student_no ?? "").localeCompare(String(b.student_no ?? ""));
+    });
+
+    // 建立 worksheet 資料
+    const wb = XLSX.utils.book_new();
+    const wsData: any[][] = [];
+
+    // 標題列
+    const titleRow = ["青山國小布可星球能量達成表", ...Array(ticks.length + 3).fill("")];
+    titleRow[titleRow.length - 1] = dateLabel;
+    wsData.push(titleRow);
+
+    // 表頭列
+    const headerRow = ["年級", "班級", "座號", "學生姓名", ...ticks.map(t => t.toString())];
+    wsData.push(headerRow);
+
+    // 資料列
+    for (const r of sorted) {
+      const classId = String(r.class_id ?? "");
+      const grade = classId ? classId[0] : "";
+      const classNum = classId ? classId.slice(1) : "";
+      const seat = String(r.student_no ?? "").slice(-2).replace(/^0/, "");
+      const name = maskName(r.name ?? "");
+      const energy = r.total_energy ?? 0;
+
+      // 刻度格：達到該刻度就填色（用空字串，靠顏色表示）
+      const tickCells = ticks.map(t => energy >= t ? "" : "");
+      wsData.push([grade, classNum, seat, name, ...tickCells]);
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // 設定欄寬
+    ws["!cols"] = [
+      { wch: 4 },  // 年級
+      { wch: 4 },  // 班級
+      { wch: 4 },  // 座號
+      { wch: 8 },  // 姓名
+      ...ticks.map(() => ({ wch: 5 })),
+    ];
+
+    // 合併標題列
+    ws["!merges"] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: ticks.length + 2 } },
+    ];
+
+    // 套用儲存格樣式（需要 xlsx-style 或 exceljs；這裡用基本方式標記）
+    // 為每個資料列套用年級顏色（在 col D 之後，有能量的格子填色）
+    const dataStartRow = 2;
+    for (let i = 0; i < sorted.length; i++) {
+      const r = sorted[i];
+      const rowIdx = dataStartRow + i;
+      const classId = String(r.class_id ?? "");
+      const energy = r.total_energy ?? 0;
+      const bgColor = classColors[classId] ?? "FFFFFFFF";
+
+      // 套用年級底色到前4欄
+      for (let c = 0; c < 4; c++) {
+        const addr = XLSX.utils.encode_cell({ r: rowIdx, c });
+        if (!ws[addr]) ws[addr] = { v: "", t: "s" };
+        ws[addr].s = { fill: { fgColor: { rgb: bgColor.slice(2) } } };
+      }
+
+      // 已達到的刻度格套用深一點的顏色
+      const reachedColor = (bgColor.slice(2));
+      for (let ti = 0; ti < ticks.length; ti++) {
+        const addr = XLSX.utils.encode_cell({ r: rowIdx, c: 4 + ti });
+        if (!ws[addr]) ws[addr] = { v: "", t: "s" };
+        if (energy >= ticks[ti]) {
+          ws[addr].s = { fill: { fgColor: { rgb: reachedColor } } };
+        }
+      }
+    }
+
+    // 標題列樣式
+    const titleAddr = XLSX.utils.encode_cell({ r: 0, c: 0 });
+    if (ws[titleAddr]) {
+      ws[titleAddr].s = {
+        font: { bold: true, sz: 16 },
+        alignment: { horizontal: "center" },
+        fill: { fgColor: { rgb: "FFFF4444" } },
+      };
+    }
+
+    XLSX.utils.book_append_sheet(wb, ws, "能量達成表");
+    XLSX.writeFile(wb, filename);
     toast.success("已下載 Excel");
   }
 
