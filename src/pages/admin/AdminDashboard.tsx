@@ -1064,45 +1064,28 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   async function loadExportData() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("app_reading_monthly")
-        .select("account, energy_added, books_added, year_month")
-        .gte("year_month", range.start)
-        .lte("year_month", range.end);
-      if (error) throw error;
+      // 直接從 app_reading_totals 取累積總能量，不從月報加總
+      const [{ data: totals, error: totErr }, { data: users, error: usrErr }] = await Promise.all([
+        supabase.from("app_reading_totals").select("account, total_energy, total_books"),
+        supabase.from("app_users").select("account, name, class_id").eq("role", "student"),
+      ]);
+      if (totErr) throw totErr;
+      if (usrErr) throw usrErr;
 
-      // 補上學生姓名和班級
-      const accounts = [...new Set((data ?? []).map((r: any) => r.account))];
-      let userMap2: Record<string, {name: string; class_id: string}> = {};
-      if (accounts.length > 0) {
-        const { data: users } = await supabase
-          .from("app_users")
-          .select("account, name, class_id")
-          .in("account", accounts as string[]);
-        (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
-      }
+      const userMap2: Record<string, {name: string; class_id: string}> = {};
+      (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
 
-      const map = new Map<string, any>();
-      for (const r of (data as any[]) ?? []) {
-        const k = String(r.account);
-        const u = userMap2[k];
-        const prev = map.get(k) ?? {
-          student_no: k,
-          account: k,
-          name: u?.name ?? k,
+      const out = (totals ?? []).map((r: any) => {
+        const u = userMap2[r.account];
+        return {
+          student_no: r.account,
+          account: r.account,
+          name: u?.name ?? r.account,
           class_id: u?.class_id ?? null,
-          total_energy: 0,
-          total_books: 0,
+          total_energy: r.total_energy ?? 0,
+          total_books: r.total_books ?? 0,
         };
-        prev.total_energy += Number(r.energy_added ?? 0) || 0;
-        prev.total_books += Number(r.books_added ?? 0) || 0;
-        if (u?.name) prev.name = u.name;
-        if (u?.class_id) prev.class_id = u.class_id;
-        map.set(k, prev);
-      }
-
-      const out = Array.from(map.values())
-        .sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));
+      }).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));
 
       setRows(out);
       if (out.length === 0) {
@@ -1501,7 +1484,7 @@ function EnergyBarChart({
         return (
           <g key={g} transform={`translate(${marginLeft + i * 110}, ${legendY})`}>
             <rect width={14} height={14} fill={c} rx={3} />
-            <text x={18} y={11} fontSize={11} fill="#444">{GRADE_ZH[g] ?? g}年級</text>
+            <text x={18} y={11} fontSize={11} fill="#444">{GRADE_ZH[g] ?? g}</text>
           </g>
         );
       })}
