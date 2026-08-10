@@ -1341,11 +1341,14 @@ const GRADE_COLORS: Record<string, string> = {
   "6": "#C080FF", // 六年級：紫
 };
 
+const GRADE_ZH: Record<string, string> = {
+  "1": "一甲", "2": "二甲", "3": "三甲",
+  "4": "四甲", "5": "五甲", "6": "六甲",
+};
 
 function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: ClassCode | "all"; ym: string }) {
   const refId = "energy-chart";
 
-  // 日期標籤：2026.08
   const now = new Date();
   const dateLabel = `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,"0")}`;
 
@@ -1353,7 +1356,6 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
     const rows = classFilter === "all" ? data : data.filter((r) => r.class_id === classFilter);
     return [...rows]
       .sort((a, b) => {
-        // 依班級再依帳號排序（年級+座號）
         const cmp = String(a.class_id ?? "").localeCompare(String(b.class_id ?? ""));
         if (cmp !== 0) return cmp;
         return String(a.student_no ?? "").localeCompare(String(b.student_no ?? ""));
@@ -1361,12 +1363,17 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
       .map((r) => {
         const classId = String(r.class_id ?? "");
         const grade = classId ? classId[0] : "?";
-        const seat = String(r.student_no ?? "").slice(-2).replace(/^0/, "");
-        const label = `${grade}年${seat}號 ${maskName(r.name ?? "")}`;
+        // 座號：去掉前綴0，但雙位數(>=10)保留
+        const seatNum = parseInt(String(r.student_no ?? "").slice(-2), 10);
+        const seat = isNaN(seatNum) ? "" : String(seatNum);
+        const gradeLabel = GRADE_ZH[grade] ?? `${grade}甲`;
+        // 座號對齊：單位數補一個空格前綴
+        const seatLabel = seatNum < 10 ? ` ${seat}號` : `${seat}號`;
+        const label = `${gradeLabel}${seatLabel} ${maskName(r.name ?? "")}`;
         return {
           label,
           grade,
-          energy: r.total_energy ?? 0,
+          energy: r.total_energy ?? 0,  // 累積總能量
           color: GRADE_COLORS[grade] ?? "#aaa",
         };
       });
@@ -1375,9 +1382,11 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
   const maxE = Math.max(0, ...chartData.map((d) => d.energy));
   const maxTick = Math.ceil(maxE / 500) * 500 || 500;
 
-  // 每個學生列高 28px
-  const barHeight = 28;
-  const chartHeight = Math.max(300, chartData.length * barHeight + 60);
+  const barH = 22;
+  const barGap = 6;
+  const legendH = 40;
+  const titleH = 50;
+  const chartHeight = chartData.length * (barH + barGap);
 
   async function downloadChart() {
     const container = document.getElementById(refId);
@@ -1394,8 +1403,8 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <div>
-          <CardTitle className="text-base">布可能量長條圖（全體學生）</CardTitle>
-          <CardDescription>橫式；不同年級不同顏色；刻度固定 500；可下載 PNG</CardDescription>
+          <CardTitle className="text-base">🌟 布可能量長條圖（全體學生）</CardTitle>
+          <CardDescription>橫式；累積總能量；不同年級不同顏色；可下載 PNG</CardDescription>
         </div>
         <Button variant="outline" onClick={downloadChart}>下載圖表 PNG</Button>
       </CardHeader>
@@ -1404,7 +1413,16 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
           <div className="text-sm text-muted-foreground py-6 text-center">尚無資料（先按「載入資料」）</div>
         ) : (
           <div id={refId} className="w-full overflow-auto">
-            <EnergyBarChart data={chartData} maxTick={maxTick} chartHeight={chartHeight} dateLabel={dateLabel} />
+            <EnergyBarChart
+              data={chartData}
+              maxTick={maxTick}
+              chartHeight={chartHeight}
+              barH={barH}
+              barGap={barGap}
+              legendH={legendH}
+              titleH={titleH}
+              dateLabel={dateLabel}
+            />
           </div>
         )}
       </CardContent>
@@ -1413,24 +1431,25 @@ function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: 
 }
 
 function EnergyBarChart({
-  data, maxTick, chartHeight, dateLabel
+  data, maxTick, chartHeight, barH, barGap, legendH, titleH, dateLabel
 }: {
   data: { label: string; grade: string; energy: number; color: string }[];
   maxTick: number;
   chartHeight: number;
+  barH: number;
+  barGap: number;
+  legendH: number;
+  titleH: number;
   dateLabel: string;
 }) {
-  const marginLeft = 130;
-  const marginRight = 80;
-  const marginTop = 40;
-  const marginBottom = 30;
-  const svgWidth = 900;
+  const marginLeft = 150;
+  const marginRight = 70;
+  const marginTop = titleH + 20;
+  const marginBottom = legendH + 30;
+  const svgWidth = 960;
   const svgHeight = chartHeight + marginTop + marginBottom;
   const plotW = svgWidth - marginLeft - marginRight;
-  const barH = 20;
-  const barGap = (chartHeight / data.length) - barH;
 
-  // X 軸刻度
   const tickCount = maxTick / 500;
   const ticks = Array.from({ length: tickCount + 1 }, (_, i) => i * 500);
 
@@ -1440,10 +1459,15 @@ function EnergyBarChart({
       width={svgWidth}
       height={svgHeight}
       xmlns="http://www.w3.org/2000/svg"
-      style={{ fontFamily: "sans-serif", background: "#fff" }}
+      style={{ fontFamily: "Arial, sans-serif", background: "#fff" }}
     >
+      {/* 標題 */}
+      <text x={svgWidth / 2} y={28} textAnchor="middle" fontSize={18} fontWeight="bold" fill="#333">
+        🌟 青山國小布可星球能量達成表 🌟
+      </text>
+
       {/* 右上角日期 */}
-      <text x={svgWidth - 8} y={20} textAnchor="end" fontSize={13} fill="#888">{dateLabel}</text>
+      <text x={svgWidth - 10} y={22} textAnchor="end" fontSize={12} fill="#888">{dateLabel}</text>
 
       {/* X 軸格線和刻度 */}
       {ticks.map((t) => {
@@ -1458,15 +1482,12 @@ function EnergyBarChart({
 
       {/* 資料列 */}
       {data.map((d, i) => {
-        const y = marginTop + i * (barH + barGap) + barGap / 2;
-        const barW = (d.energy / maxTick) * plotW;
+        const y = marginTop + i * (barH + barGap);
+        const barW = maxTick > 0 ? (d.energy / maxTick) * plotW : 0;
         return (
           <g key={i}>
-            {/* 標籤 */}
-            <text x={marginLeft - 6} y={y + barH / 2 + 4} textAnchor="end" fontSize={11} fill="#333">{d.label}</text>
-            {/* 長條 */}
-            <rect x={marginLeft} y={y} width={Math.max(barW, 0)} height={barH} fill={d.color} rx={3} />
-            {/* 數值 */}
+            <text x={marginLeft - 6} y={y + barH / 2 + 4} textAnchor="end" fontSize={11} fill="#333" fontFamily="monospace">{d.label}</text>
+            <rect x={marginLeft} y={y} width={Math.max(barW, 1)} height={barH} fill={d.color} rx={3} />
             {d.energy > 0 && (
               <text x={marginLeft + barW + 4} y={y + barH / 2 + 4} fontSize={10} fill="#555">{d.energy}</text>
             )}
@@ -1474,13 +1495,16 @@ function EnergyBarChart({
         );
       })}
 
-      {/* 圖例 */}
-      {Object.entries(GRADE_COLORS).map(([g, c], i) => (
-        <g key={g} transform={`translate(${marginLeft + i * 80}, ${svgHeight - 16})`}>
-          <rect width={12} height={12} fill={c} rx={2} />
-          <text x={16} y={10} fontSize={10} fill="#555">{g}年級</text>
-        </g>
-      ))}
+      {/* 圖例（X軸刻度下方，留足夠空間） */}
+      {Object.entries(GRADE_COLORS).map(([g, c], i) => {
+        const legendY = marginTop + chartHeight + 36;
+        return (
+          <g key={g} transform={`translate(${marginLeft + i * 110}, ${legendY})`}>
+            <rect width={14} height={14} fill={c} rx={3} />
+            <text x={18} y={11} fontSize={11} fill="#444">{GRADE_ZH[g] ?? g}年級</text>
+          </g>
+        );
+      })}
     </svg>
   );
 }
