@@ -1158,12 +1158,6 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
     };
 
     // 遮蔽姓名（第2個字改為○）
-    function maskName(name: string) {
-      const s = name.trim();
-      if (s.length <= 1) return s;
-      if (s.length === 2) return s[0] + "○";
-      return s[0] + "○" + s[s.length - 1];
-    }
 
     // 排序：依班級代碼，再依帳號（座號）
     const sorted = [...data].sort((a, b) => {
@@ -1347,12 +1341,6 @@ const GRADE_COLORS: Record<string, string> = {
   "6": "#C080FF", // 六年級：紫
 };
 
-function maskName(name: string) {
-  const s = name.trim();
-  if (s.length <= 1) return s;
-  if (s.length === 2) return s[0] + "○";
-  return s[0] + "○" + s[s.length - 1];
-}
 
 function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: ClassCode | "all"; ym: string }) {
   const refId = "energy-chart";
