@@ -1294,7 +1294,6 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
             </select>
           </div>
           <Button onClick={loadExportData} disabled={loading} variant="outline">載入資料</Button>
-          <Button onClick={exportExcel} disabled={loading}>下載 Excel</Button>
         </div>
 
         {rows.length === 0 && !loading && (
@@ -1338,64 +1337,162 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   );
 }
 
+// 年級顏色對照
+const GRADE_COLORS: Record<string, string> = {
+  "1": "#FF8080", // 一年級：紅
+  "2": "#FFB347", // 二年級：橘
+  "3": "#FFD966", // 三年級：黃
+  "4": "#85E085", // 四年級：綠
+  "5": "#80C8FF", // 五年級：藍
+  "6": "#C080FF", // 六年級：紫
+};
+
+function maskName(name: string) {
+  const s = name.trim();
+  if (s.length <= 1) return s;
+  if (s.length === 2) return s[0] + "○";
+  return s[0] + "○" + s[s.length - 1];
+}
+
 function EnergyChartCard({ data, classFilter, ym }: { data: any[]; classFilter: ClassCode | "all"; ym: string }) {
   const refId = "energy-chart";
+
+  // 日期標籤：2026.08
+  const now = new Date();
+  const dateLabel = `${now.getFullYear()}.${String(now.getMonth()+1).padStart(2,"0")}`;
 
   const chartData = useMemo(() => {
     const rows = classFilter === "all" ? data : data.filter((r) => r.class_id === classFilter);
     return [...rows]
-      .sort((a, b) => (b.total_energy ?? 0) - (a.total_energy ?? 0))
-      .slice(0, 20)
-      .map((r) => ({ name: r.name, energy: r.total_energy ?? 0 }));
+      .sort((a, b) => {
+        // 依班級再依帳號排序（年級+座號）
+        const cmp = String(a.class_id ?? "").localeCompare(String(b.class_id ?? ""));
+        if (cmp !== 0) return cmp;
+        return String(a.student_no ?? "").localeCompare(String(b.student_no ?? ""));
+      })
+      .map((r) => {
+        const classId = String(r.class_id ?? "");
+        const grade = classId ? classId[0] : "?";
+        const seat = String(r.student_no ?? "").slice(-2).replace(/^0/, "");
+        const label = `${grade}年${seat}號 ${maskName(r.name ?? "")}`;
+        return {
+          label,
+          grade,
+          energy: r.total_energy ?? 0,
+          color: GRADE_COLORS[grade] ?? "#aaa",
+        };
+      });
   }, [data, classFilter]);
 
+  const maxE = Math.max(0, ...chartData.map((d) => d.energy));
+  const maxTick = Math.ceil(maxE / 500) * 500 || 500;
+
+  // 每個學生列高 28px
+  const barHeight = 28;
+  const chartHeight = Math.max(300, chartData.length * barHeight + 60);
+
   async function downloadChart() {
-    const svg = document.querySelector(`#${refId} svg`) as SVGSVGElement | null;
-    if (!svg) return toast.error("找不到圖表（請先載入資料）");
+    const container = document.getElementById(refId);
+    if (!container) return toast.error("找不到圖表（請先載入資料）");
+    const svg = container.querySelector("svg") as SVGSVGElement | null;
+    if (!svg) return toast.error("找不到圖表 SVG");
     const { downloadSvgAsPng } = await import("@/lib/exporters");
-    const filename = `布可能量長條圖_${ym}_${classFilter === "all" ? "全校" : classFilter}.png`;
+    const filename = `布可能量長條圖_${dateLabel}_${classFilter === "all" ? "全校" : classFilter}.png`;
     await downloadSvgAsPng(svg, filename, 2);
     toast.success("已下載圖表 PNG");
   }
-
-  const maxE = Math.max(0, ...chartData.map((d) => d.energy));
-  const maxTick = Math.ceil(maxE / 500) * 500;
 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <div>
-          <CardTitle className="text-base">布可能量長條圖（Top 20）</CardTitle>
-          <CardDescription>刻度固定 500；可下載 PNG</CardDescription>
+          <CardTitle className="text-base">布可能量長條圖（全體學生）</CardTitle>
+          <CardDescription>橫式；不同年級不同顏色；刻度固定 500；可下載 PNG</CardDescription>
         </div>
-        <Button variant="outline" onClick={downloadChart}>下載圖表</Button>
+        <Button variant="outline" onClick={downloadChart}>下載圖表 PNG</Button>
       </CardHeader>
       <CardContent>
-        <div id={refId} className="w-full overflow-x-auto">
-          <div className="min-w-[720px]">
-            <EnergyBarChart data={chartData} maxTick={maxTick} />
-          </div>
-        </div>
-        {chartData.length === 0 && (
+        {chartData.length === 0 ? (
           <div className="text-sm text-muted-foreground py-6 text-center">尚無資料（先按「載入資料」）</div>
+        ) : (
+          <div id={refId} className="w-full overflow-auto">
+            <EnergyBarChart data={chartData} maxTick={maxTick} chartHeight={chartHeight} dateLabel={dateLabel} />
+          </div>
         )}
       </CardContent>
     </Card>
   );
 }
 
-function EnergyBarChart({ data, maxTick }: { data: { name: string; energy: number }[]; maxTick: number }) {
+function EnergyBarChart({
+  data, maxTick, chartHeight, dateLabel
+}: {
+  data: { label: string; grade: string; energy: number; color: string }[];
+  maxTick: number;
+  chartHeight: number;
+  dateLabel: string;
+}) {
+  const marginLeft = 130;
+  const marginRight = 80;
+  const marginTop = 40;
+  const marginBottom = 30;
+  const svgWidth = 900;
+  const svgHeight = chartHeight + marginTop + marginBottom;
+  const plotW = svgWidth - marginLeft - marginRight;
+  const barH = 20;
+  const barGap = (chartHeight / data.length) - barH;
+
+  // X 軸刻度
+  const tickCount = maxTick / 500;
+  const ticks = Array.from({ length: tickCount + 1 }, (_, i) => i * 500);
+
   return (
-    <div className="h-[360px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={data} margin={{ top: 10, right: 24, left: 12, bottom: 24 }}>
-          <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="name" interval={0} angle={-18} textAnchor="end" height={60} />
-          <YAxis domain={[0, maxTick || 500]} tickCount={Math.max(2, (maxTick || 500) / 500 + 1)} />
-          <Tooltip />
-          <Bar dataKey="energy" fill="#f59e0b" radius={[6, 6, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
+    <svg
+      viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+      width={svgWidth}
+      height={svgHeight}
+      xmlns="http://www.w3.org/2000/svg"
+      style={{ fontFamily: "sans-serif", background: "#fff" }}
+    >
+      {/* 右上角日期 */}
+      <text x={svgWidth - 8} y={20} textAnchor="end" fontSize={13} fill="#888">{dateLabel}</text>
+
+      {/* X 軸格線和刻度 */}
+      {ticks.map((t) => {
+        const x = marginLeft + (t / maxTick) * plotW;
+        return (
+          <g key={t}>
+            <line x1={x} y1={marginTop} x2={x} y2={marginTop + chartHeight} stroke="#e5e7eb" strokeWidth={1} />
+            <text x={x} y={marginTop + chartHeight + 16} textAnchor="middle" fontSize={11} fill="#666">{t}</text>
+          </g>
+        );
+      })}
+
+      {/* 資料列 */}
+      {data.map((d, i) => {
+        const y = marginTop + i * (barH + barGap) + barGap / 2;
+        const barW = (d.energy / maxTick) * plotW;
+        return (
+          <g key={i}>
+            {/* 標籤 */}
+            <text x={marginLeft - 6} y={y + barH / 2 + 4} textAnchor="end" fontSize={11} fill="#333">{d.label}</text>
+            {/* 長條 */}
+            <rect x={marginLeft} y={y} width={Math.max(barW, 0)} height={barH} fill={d.color} rx={3} />
+            {/* 數值 */}
+            {d.energy > 0 && (
+              <text x={marginLeft + barW + 4} y={y + barH / 2 + 4} fontSize={10} fill="#555">{d.energy}</text>
+            )}
+          </g>
+        );
+      })}
+
+      {/* 圖例 */}
+      {Object.entries(GRADE_COLORS).map(([g, c], i) => (
+        <g key={g} transform={`translate(${marginLeft + i * 80}, ${svgHeight - 16})`}>
+          <rect width={12} height={12} fill={c} rx={2} />
+          <text x={16} y={10} fontSize={10} fill="#555">{g}年級</text>
+        </g>
+      ))}
+    </svg>
   );
 }
