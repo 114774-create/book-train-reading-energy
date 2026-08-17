@@ -14,6 +14,7 @@ import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
 import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
+import LotterySystem from "@/components/LotterySystem";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
 // Vite 環境下用 ?url 匯入 worker
@@ -119,6 +120,7 @@ export default function AdminDashboard() {
   const [excelImportResult, setExcelImportResult] = useState<any>(null);
   const [importHistory, setImportHistory] = useState<{ym: string; processed: number; not_found: number; at: string}[]>([]);
   const [returningBox, setReturningBox] = useState<number | null>(null);
+  const [showLottery, setShowLottery] = useState(false);
 
   const ymDefault = useMemo(() => {
     const d = new Date();
@@ -259,10 +261,14 @@ export default function AdminDashboard() {
       setExcelImportResult(data);
       setPdfImportResult(null);
       // 加入匯入歷史
-      setImportHistory(prev => {
-        const filtered = prev.filter(h => h.ym !== ym); // 覆蓋同月份
-        return [{ ym, processed: data.processed ?? 0, not_found: (data.not_found ?? []).length, at: new Date().toLocaleString("zh-TW") }, ...filtered];
-      });
+      // 寫入持久化歷史紀錄
+      await supabase.from("import_history").upsert({
+        year_month: ym,
+        processed: data.processed ?? 0,
+        not_found: (data.not_found ?? []).length,
+        imported_at: new Date().toISOString(),
+      }, { onConflict: "year_month" });
+      await loadImportHistory();
 
       const missingCount = (data.not_found ?? []).length;
       if (missingCount > 0) {
@@ -560,9 +566,27 @@ export default function AdminDashboard() {
       });
   }, [users, uq, uRole, uClass]);
 
+  async function loadImportHistory() {
+    const { data } = await supabase
+      .from("import_history")
+      .select("year_month, processed, not_found, imported_at")
+      .order("imported_at", { ascending: false });
+    if (data) {
+      setImportHistory(
+        data.map((r: any) => ({
+          ym: r.year_month,
+          processed: r.processed ?? 0,
+          not_found: r.not_found ?? 0,
+          at: new Date(r.imported_at).toLocaleString("zh-TW"),
+        }))
+      );
+    }
+  }
+
   useEffect(() => {
     loadUsers();
     loadBoxLoans();
+    loadImportHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -574,10 +598,19 @@ export default function AdminDashboard() {
 
   return (
     <div className="p-6 space-y-4">
-      <div>
-        <h2 className="text-xl font-extrabold tracking-tight">匯入與管理 🛠️</h2>
-        <p className="text-sm text-muted-foreground mt-1">核心功能：書箱 PDF 智慧匯入、每月 Excel 報表匯入比對、人事管理、排行榜與匯出</p>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-extrabold tracking-tight">匯入與管理 🛠️</h2>
+          <p className="text-sm text-muted-foreground mt-1">核心功能：書箱 PDF 智慧匯入、每月 Excel 報表匯入比對、人事管理、排行榜與匯出</p>
+        </div>
+        <Button
+          onClick={() => setShowLottery(true)}
+          className="bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-500 hover:to-orange-500 text-white font-bold rounded-2xl shadow"
+        >
+          🎰 開啟抽獎系統
+        </Button>
       </div>
+      {showLottery && <LotterySystem />}
 
       <Tabs defaultValue="pdf">
         <TabsList className="grid grid-cols-7 w-full max-w-5xl">
