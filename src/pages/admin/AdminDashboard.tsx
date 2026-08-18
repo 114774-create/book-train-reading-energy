@@ -15,6 +15,7 @@ import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
 import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
 import LotterySystem from "@/components/LotterySystem";
+import { LotteryManagementTab } from "@/components/admin/LotteryManagementTab";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
 // Vite 環境下用 ?url 匯入 worker
@@ -610,10 +611,10 @@ export default function AdminDashboard() {
           🎰 開啟抽獎系統
         </Button>
       </div>
-      {showLottery && <LotterySystem />}
+      {showLottery && <LotterySystem onClose={() => setShowLottery(false)} />}
 
       <Tabs defaultValue="pdf">
-        <TabsList className="grid grid-cols-7 w-full max-w-5xl">
+        <TabsList className="grid grid-cols-8 w-full max-w-5xl">
           <TabsTrigger value="pdf">PDF 書箱匯入</TabsTrigger>
           <TabsTrigger value="excel">Excel 月報匯入</TabsTrigger>
           <TabsTrigger value="users">人事管理</TabsTrigger>
@@ -621,6 +622,7 @@ export default function AdminDashboard() {
           <TabsTrigger value="rank">每月排行榜</TabsTrigger>
           <TabsTrigger value="export">匯出/圖表</TabsTrigger>
           <TabsTrigger value="events">主題活動</TabsTrigger>
+          <TabsTrigger value="lottery">抽獎管理</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pdf" className="mt-4">
@@ -1068,6 +1070,10 @@ export default function AdminDashboard() {
 
         <TabsContent value="events" className="mt-4">
           <ThemeEventsTab />
+        </TabsContent>
+
+        <TabsContent value="lottery" className="mt-4">
+          <LotteryManagementTab />
         </TabsContent>
       </Tabs>
     </div>

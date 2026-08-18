@@ -48,7 +48,11 @@ function drawOne(pool: Student[], excluded: Set<string>): Student | null {
   return available[Math.floor(Math.random() * available.length)];
 }
 
-export default function LotterySystem() {
+interface LotterySystemProps {
+  onClose: () => void;
+}
+
+export default function LotterySystem({ onClose }: LotterySystemProps) {
   const [authed, setAuthed] = useState(false);
   const [pwInput, setPwInput] = useState("");
   const [pwError, setPwError] = useState(false);
@@ -69,10 +73,22 @@ export default function LotterySystem() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [spinning, setSpinning] = useState<string>("");
   const spinRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [closed, setClosed] = useState(false);
 
-  // 後台抽獎完成記錄（per month per class）
+  // 後台抽獎完成記錄（per month per class），從 Supabase lottery_records 讀取，跨裝置/跨登入都會保留
   const [completedKeys, setCompletedKeys] = useState<Set<string>>(new Set());
+
+  // 讀取歷史中獎記錄，換算出「哪些月份+班級已經抽過獎」
+  async function loadCompletedKeys() {
+    const { data } = await supabase
+      .from("lottery_records")
+      .select("year_month, class_id");
+    const keys = new Set<string>();
+    (data ?? []).forEach((r: any) => {
+      keys.add(`${r.year_month}-${r.class_id}`);
+      keys.add(`${r.year_month}-all`); // 只要該月有任何一筆記錄，全校抽獎也視為已進行過
+    });
+    setCompletedKeys(keys);
+  }
 
   // 管理員密碼驗證（從 app_users 取 admin 的 password_hash 比對）
   async function handleAuth() {
@@ -89,7 +105,7 @@ export default function LotterySystem() {
     }
   }
 
-  // 載入可用月份
+  // 載入可用月份 + 已完成的抽獎狀態
   useEffect(() => {
     if (!authed) return;
     supabase
@@ -100,6 +116,7 @@ export default function LotterySystem() {
         setMonths(yms);
         if (yms.length > 0) setSelectedMonth(yms[0]);
       });
+    loadCompletedKeys();
   }, [authed]);
 
   // 載入學生資料
@@ -199,11 +216,26 @@ export default function LotterySystem() {
     setSpinning(newWinners[0]?.name ?? "");
     setWinners(prev => [...prev, ...newWinners]);
     setPhase("done");
+
+    // 寫入 Supabase，記錄本次中獎名單
+    if (newWinners.length) {
+      const rows = newWinners.map(w => ({
+        year_month: selectedMonth,
+        class_id: w.class_id || "unknown",
+        winner_account: w.account,
+        winner_name: w.name,
+        rank: w.rank,
+      }));
+      const { error } = await supabase.from("lottery_records").insert(rows);
+      if (error) {
+        console.error("寫入中獎記錄失敗:", error);
+      } else {
+        loadCompletedKeys();
+      }
+    }
   }
 
   function handleClose() {
-    const key = `${selectedMonth}-${selectedClass}`;
-    setCompletedKeys(prev => new Set([...prev, key]));
     setPhase("idle");
     setWinners([]);
   }
@@ -213,8 +245,6 @@ export default function LotterySystem() {
     setPhase("idle");
     setSpinning("");
   }
-
-  if (closed) return null;
 
   // 未驗證：密碼輸入
   if (!authed) {
@@ -253,7 +283,7 @@ export default function LotterySystem() {
           <div className="text-5xl">📭</div>
           <h2 className="text-xl font-bold">目前非開放時間</h2>
           <p className="text-gray-500 text-sm text-center">尚無本月借閱資料，請先匯入 Excel 月報。</p>
-          <button onClick={() => setClosed(true)} className="mt-2 px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl font-medium transition">關閉</button>
+          <button onClick={() => onClose()} className="mt-2 px-6 py-2 bg-gray-200 hover:bg-gray-300 rounded-xl font-medium transition">關閉</button>
         </div>
       </div>
     );
@@ -272,7 +302,7 @@ export default function LotterySystem() {
             <p className="text-amber-100 text-xs mt-0.5">閱讀越多、中獎機率越高！</p>
           </div>
           <button
-            onClick={() => setClosed(true)}
+            onClick={() => onClose()}
             className="text-white/70 hover:text-white text-2xl leading-none font-bold"
           >✕</button>
         </div>
@@ -417,7 +447,7 @@ export default function LotterySystem() {
             onClick={handleClose}
             className="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-500 text-sm font-medium rounded-2xl transition"
           >
-            結束本次抽獎（記錄完成狀態）
+            清空本次結果，繼續抽下一批
           </button>
 
           {/* 完成提示 */}

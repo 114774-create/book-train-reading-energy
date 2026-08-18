@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import hero from "@/assets/hero_train_books.png";
 import iconBook from "@/assets/icon_book.png";
 import iconTicket from "@/assets/icon_ticket.png";
+import LotterySystem from "@/components/LotterySystem";
 
 interface LoginPageProps {
   onDone?: () => void;
@@ -27,6 +28,7 @@ export default function LoginPage({ onDone }: LoginPageProps) {
   const [loading, setLoading] = useState(false);
 
   const [teachers, setTeachers] = useState<TeacherOption[]>([]);
+  const [showLottery, setShowLottery] = useState(false);
 
   function maskName(name: string) {
     const s = name.trim();
@@ -223,12 +225,22 @@ export default function LoginPage({ onDone }: LoginPageProps) {
         </div>
 
         <div className="order-1 lg:order-2">
+          <div className="flex justify-end mb-3">
+            <button
+              onClick={() => setShowLottery(true)}
+              className="inline-flex items-center gap-2 rounded-2xl bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-500 hover:to-orange-500 text-white font-bold px-5 py-2.5 shadow-[0_14px_28px_-18px_rgba(245,158,11,0.85)] transition-transform hover:-translate-y-0.5 hover:shadow-lg active:translate-y-0"
+            >
+              🎰 抽獎
+            </button>
+          </div>
           <div className="relative">
             <div className="absolute -inset-5 rounded-[2.5rem] bg-white/40 blur-2xl" />
             <img src={hero} alt="" className="relative w-full rounded-[2.25rem] border shadow-[0_24px_60px_-30px_rgba(14,165,233,0.35)] transition-transform duration-300 hover:scale-[1.02]" />
           </div>
         </div>
       </div>
+
+      {showLottery && <LotterySystem onClose={() => setShowLottery(false)} />}
     </div>
   );
 }
