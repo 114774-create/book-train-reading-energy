@@ -764,13 +764,17 @@ export default function AdminDashboard() {
             </CardContent>
           </Card>
 
-          {importHistory.length > 0 && (
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">📋 本次登入的匯入紀錄</CardTitle>
-                <CardDescription>同月份重複匯入會自動覆蓋原資料</CardDescription>
-              </CardHeader>
-              <CardContent>
+          <Card className="mt-4">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base">📋 已上傳月份歷史紀錄</CardTitle>
+              <CardDescription>同月份重複匯入會自動覆蓋原資料；此清單會持續保留，與登入狀態無關</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {importHistory.length === 0 ? (
+                <div className="text-center py-8 text-muted-foreground text-sm">
+                  尚未匯入過任何月份報表
+                </div>
+              ) : (
                 <div className="overflow-auto">
                   <Table>
                     <TableHeader>
@@ -782,7 +786,9 @@ export default function AdminDashboard() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {importHistory.map((h) => (
+                      {[...importHistory]
+                        .sort((a, b) => b.ym.localeCompare(a.ym))
+                        .map((h) => (
                         <TableRow key={h.ym}>
                           <TableCell className="font-mono font-medium">{h.ym}</TableCell>
                           <TableCell className="text-right font-medium">{h.processed}</TableCell>
@@ -799,9 +805,9 @@ export default function AdminDashboard() {
                     </TableBody>
                   </Table>
                 </div>
-              </CardContent>
-            </Card>
-          )}
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
 
         <TabsContent value="users" className="mt-4">

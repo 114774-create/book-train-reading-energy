@@ -223,12 +223,36 @@ Deno.serve(async (req) => {
     }
 
     // 寫入 app_reading_totals（累積總計）
+    // 注意：不直接信任 Excel 裡的「學生挖掘總能量/總本數」欄位，
+    // 因為若月報上傳順序顛倒（例如先傳5月、再補傳4月），
+    // 4月報表自帶的累積欄位會比5月小，直接覆蓋會讓總量「倒退」。
+    // 改成用 app_reading_monthly 目前所有月份的加總，結果與上傳順序無關。
     if (parsedRows.length > 0) {
-      const totalRows = parsedRows.map((r) => ({
-        account:      r.account,
-        total_energy: r.total_energy,
-        total_books:  r.total_books,
-        updated_at:   now,
+      const accounts = [...new Set(parsedRows.map((r) => r.account))];
+
+      const { data: allMonthly, error: sumErr } = await SUPABASE
+        .from("app_reading_monthly")
+        .select("account, energy_added, books_added")
+        .in("account", accounts);
+
+      if (sumErr) {
+        console.error("讀取月報加總失敗:", sumErr);
+        throw new Error("讀取累積資料失敗：" + sumErr.message);
+      }
+
+      const sumMap: Record<string, { energy: number; books: number }> = {};
+      for (const row of allMonthly ?? []) {
+        const acc = row.account as string;
+        if (!sumMap[acc]) sumMap[acc] = { energy: 0, books: 0 };
+        sumMap[acc].energy += (row.energy_added as number) ?? 0;
+        sumMap[acc].books += (row.books_added as number) ?? 0;
+      }
+
+      const totalRows = accounts.map((acc) => ({
+        account: acc,
+        total_energy: sumMap[acc]?.energy ?? 0,
+        total_books: sumMap[acc]?.books ?? 0,
+        updated_at: now,
       }));
 
       const { error: totalErr } = await SUPABASE
