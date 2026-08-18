@@ -73,6 +73,7 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [spinning, setSpinning] = useState<string>("");
   const spinRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [showParticipants, setShowParticipants] = useState(true);
 
   // 後台抽獎完成記錄（per month per class），從 Supabase lottery_records 讀取，跨裝置/跨登入都會保留
   const [completedKeys, setCompletedKeys] = useState<Set<string>>(new Set());
@@ -175,6 +176,10 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
   }, [students, selectedClass]);
 
   const totalTickets = filtered.reduce((s, r) => s + r.tickets, 0);
+
+  const sortedParticipants = useMemo(() => {
+    return [...filtered].sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name, "zh-Hant"));
+  }, [filtered]);
 
   // 抽獎動畫
   async function startDraw() {
@@ -369,25 +374,66 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
             </div>
           )}
 
+          {/* 參加名單：姓名 + 各自機會（籤數） */}
+          {dataReady && filtered.length > 0 && (
+            <div className="rounded-2xl border overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowParticipants(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition text-left"
+              >
+                <span className="text-sm font-bold text-gray-600">🧒 參加名單（{filtered.length} 人）</span>
+                <span className="text-xs text-gray-400">{showParticipants ? "收合 ▲" : "展開 ▼"}</span>
+              </button>
+              {showParticipants && (
+                <div className="max-h-48 overflow-y-auto p-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {sortedParticipants.map(s => {
+                      const isWinner = winners.some(w => w.account === s.account);
+                      return (
+                        <div
+                          key={s.account}
+                          className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-1.5 text-sm ${isWinner ? "bg-amber-50 border-amber-300" : "bg-white border-gray-100"}`}
+                        >
+                          <span className={`font-medium truncate ${isWinner ? "text-amber-700" : "text-gray-700"}`}>
+                            {isWinner ? "🏆 " : ""}{maskName(s.name)}
+                          </span>
+                          <span className="shrink-0 text-xs font-bold text-orange-500 bg-orange-50 rounded-full px-2 py-0.5">
+                            ⛏️ ×{s.tickets}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* 抽獎動畫 */}
-          <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-4 text-center min-h-24 flex flex-col items-center justify-center gap-2">
+          <div className="rounded-2xl border-2 border-amber-200 bg-amber-50 p-6 text-center min-h-32 flex flex-col items-center justify-center gap-3">
             {phase === "idle" && winners.length === 0 && (
               <p className="text-gray-400 text-sm">✨ 按下「開始抽獎」開始挖寶！</p>
             )}
             {phase === "spinning" && (
               <>
                 <p className="text-xs text-amber-500 font-bold animate-pulse">⛏️ 挖掘中…</p>
-                <p className="text-3xl font-extrabold text-amber-700 tracking-widest animate-bounce">{spinning}</p>
+                <p className="text-4xl font-extrabold text-amber-700 tracking-widest animate-bounce">{spinning}</p>
               </>
             )}
             {phase === "done" && (
               <>
-                <p className="text-xs text-green-600 font-bold">🎉 恭喜得獎！</p>
-                <div className="flex flex-wrap gap-2 justify-center">
+                <p className="text-sm text-green-600 font-bold">🎉 恭喜得獎！</p>
+                <div className="flex flex-wrap gap-4 justify-center">
                   {winners.slice(-drawCount).map(w => (
-                    <span key={w.account} className="bg-amber-400 text-white font-extrabold px-4 py-1.5 rounded-full text-lg shadow">
-                      {CLASS_LABELS[w.class_id] ?? w.class_id} {maskName(w.name)}
-                    </span>
+                    <div key={w.account} className="flex flex-col items-center animate-bounce">
+                      <span className="text-5xl md:text-6xl font-black text-amber-600 drop-shadow-sm tracking-wide">
+                        {maskName(w.name)}
+                      </span>
+                      <span className="mt-1 text-sm font-bold text-white bg-amber-400 px-3 py-0.5 rounded-full shadow">
+                        {CLASS_LABELS[w.class_id] ?? w.class_id}
+                      </span>
+                    </div>
                   ))}
                 </div>
               </>

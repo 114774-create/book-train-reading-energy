@@ -14,7 +14,6 @@ import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
 import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
-import LotterySystem from "@/components/LotterySystem";
 import { LotteryManagementTab } from "@/components/admin/LotteryManagementTab";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
@@ -121,7 +120,6 @@ export default function AdminDashboard() {
   const [excelImportResult, setExcelImportResult] = useState<any>(null);
   const [importHistory, setImportHistory] = useState<{ym: string; processed: number; not_found: number; at: string}[]>([]);
   const [returningBox, setReturningBox] = useState<number | null>(null);
-  const [showLottery, setShowLottery] = useState(false);
 
   const ymDefault = useMemo(() => {
     const d = new Date();
@@ -604,14 +602,7 @@ export default function AdminDashboard() {
           <h2 className="text-xl font-extrabold tracking-tight">匯入與管理 🛠️</h2>
           <p className="text-sm text-muted-foreground mt-1">核心功能：書箱 PDF 智慧匯入、每月 Excel 報表匯入比對、人事管理、排行榜與匯出</p>
         </div>
-        <Button
-          onClick={() => setShowLottery(true)}
-          className="bg-gradient-to-r from-amber-400 to-orange-400 hover:from-amber-500 hover:to-orange-500 text-white font-bold rounded-2xl shadow"
-        >
-          🎰 開啟抽獎系統
-        </Button>
       </div>
-      {showLottery && <LotterySystem onClose={() => setShowLottery(false)} />}
 
       <Tabs defaultValue="pdf">
         <TabsList className="grid grid-cols-8 w-full max-w-5xl">
