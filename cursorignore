@@ -1,0 +1,17 @@
+# 防止 Cursor 的 AI 索引讀取、上傳任何環境變數 / 密鑰檔案
+# 這份清單跟 .gitignore 分開管理：.gitignore 只擋 git，這份擋 Cursor 本身的索引功能
+
+.env
+.env.*
+*.local
+!.env.example
+
+# Google / Supabase 服務帳號金鑰等機密檔案，若未來以檔案形式存放也一併排除
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+
+node_modules
+dist
+dist-ssr
