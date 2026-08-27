@@ -22,6 +22,7 @@ interface EnergyRow {
 
 export function StudentEnergyTab() {
   const [rows, setRows] = useState<EnergyRow[]>([]);
+  const [latestMonth, setLatestMonth] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [q, setQ] = useState("");
   const [classFilter, setClassFilter] = useState<string>("all");
@@ -30,23 +31,43 @@ export function StudentEnergyTab() {
   async function load() {
     setLoading(true);
     try {
-      const [{ data: totals, error: totalsErr }, { data: users, error: usersErr }] = await Promise.all([
-        supabase.from("app_reading_totals").select("account, total_energy, total_books"),
+      const [{ data: monthly, error: monthlyErr }, { data: users, error: usersErr }] = await Promise.all([
+        supabase.from("app_reading_monthly").select("account, year_month, total_energy_snapshot, total_books_snapshot"),
         supabase.from("app_users").select("account, name, class_id").eq("role", "student"),
       ]);
 
-      if (totalsErr) throw totalsErr;
+      if (monthlyErr) throw monthlyErr;
       if (usersErr) throw usersErr;
 
+      // 每個學生各自「最新一個月份」的快照值（Excel 裡「學生挖掘總能量/總本數」欄位原始值，
+      // 學校自己系統算出來的累積值，含 2026-05 之前手動登記、沒有匯入本系統的歷史）。
+      // 不是加總——如果同一個學生有多個月份，永遠以年月最大的那筆為準。
+      const latestByAccount: Record<string, { year_month: string; energy: number; books: number }> = {};
+      let latest = "";
+      for (const r of monthly ?? []) {
+        const acc = r.account as string;
+        const ym = r.year_month as string;
+        if (ym > latest) latest = ym;
+        const cur = latestByAccount[acc];
+        if (!cur || ym > cur.year_month) {
+          latestByAccount[acc] = {
+            year_month: ym,
+            energy: (r.total_energy_snapshot as number) ?? 0,
+            books: (r.total_books_snapshot as number) ?? 0,
+          };
+        }
+      }
+      setLatestMonth(latest);
+
       const userMap = new Map((users ?? []).map((u: any) => [u.account, u]));
-      const mapped: EnergyRow[] = (totals ?? []).map((r: any) => {
-        const u = userMap.get(r.account);
+      const mapped: EnergyRow[] = Object.entries(latestByAccount).map(([account, v]) => {
+        const u = userMap.get(account);
         return {
-          account:      r.account,
-          name:         u?.name ?? r.account,
+          account,
+          name:         u?.name ?? account,
           class_id:     u?.class_id ?? null,
-          total_energy: r.total_energy ?? 0,
-          total_books:  r.total_books ?? 0,
+          total_energy: v.energy,
+          total_books:  v.books,
         };
       });
       setRows(mapped);
@@ -108,7 +129,11 @@ export function StudentEnergyTab() {
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
               <CardTitle className="text-base">⚡ 學生累積能量總覽</CardTitle>
-              <CardDescription>每 {ENERGY_PER_LEVEL} 能量升一階，資料由 Excel 月報匯入後更新</CardDescription>
+              <CardDescription>
+                每 {ENERGY_PER_LEVEL} 能量升一階；直接採用各學生「最新一次月報」的學生挖掘總能量/總本數
+                {latestMonth ? <span className="font-mono font-bold text-amber-600"> （最新至 {latestMonth}）</span> : "（尚無資料）"}
+                ，含匯入本系統前的歷史紀錄
+              </CardDescription>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
               <Input

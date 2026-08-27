@@ -31,6 +31,15 @@ function safeParseInt(s: any): number | null {
   return isNaN(n) ? null : n;
 }
 
+function prevYearMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  const py = d.getUTCFullYear();
+  const pm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  return `${py}-${pm}`;
+}
+
 interface ParsedRow {
   account: string;
   name: string;
@@ -200,60 +209,72 @@ Deno.serve(async (req) => {
     const ymMismatch = mostCommonYm && mostCommonYm !== target_year_month;
 
     const now = new Date().toISOString();
+    let newCards: { account: string; name: string; class_id: string; year_month: string; cards_this_month: number }[] = [];
 
-    // 寫入 app_reading_monthly（每人每月一筆）
     if (parsedRows.length > 0) {
-      const monthlyRows = parsedRows.map((r) => ({
+      const accounts = [...new Set(parsedRows.map((r) => r.account))];
+      const prevYm = prevYearMonth(target_year_month);
+
+      // 第一次寫入 app_reading_monthly（cards_earned 先用 0 佔位，稍後用正確公式回填）
+      // total_energy_snapshot / total_books_snapshot：直接存 Excel 自己的「學生挖掘總能量/總本數」
+      // 欄位——這是學校自己系統算出的真正累積值（含 2026-05 之前手動登記、沒有匯入本系統的歷史），
+      // 不是我們自己加總算出來的，所以完全不受「哪些月份有沒有匯入」影響。
+      const monthlyRowsInitial = parsedRows.map((r) => ({
         account:    r.account,
         year_month: target_year_month,
         energy_added: r.monthly_energy,
         books_added:  r.monthly_books,
-        cards_earned: Math.floor(r.total_energy / 500),
+        total_energy_snapshot: r.total_energy,
+        total_books_snapshot:  r.total_books,
+        cards_earned: 0,
         created_at: now,
       }));
 
       const { error: monthlyErr } = await SUPABASE
         .from("app_reading_monthly")
-        .upsert(monthlyRows, { onConflict: "account,year_month" });
+        .upsert(monthlyRowsInitial, { onConflict: "account,year_month" });
 
       if (monthlyErr) {
         console.error("app_reading_monthly upsert error:", monthlyErr);
         throw new Error("寫入月報失敗：" + monthlyErr.message);
       }
-    }
 
-    // 寫入 app_reading_totals（累積總計）
-    // 注意：不直接信任 Excel 裡的「學生挖掘總能量/總本數」欄位，
-    // 因為若月報上傳順序顛倒（例如先傳5月、再補傳4月），
-    // 4月報表自帶的累積欄位會比5月小，直接覆蓋會讓總量「倒退」。
-    // 改成用 app_reading_monthly 目前所有月份的加總，結果與上傳順序無關。
-    if (parsedRows.length > 0) {
-      const accounts = [...new Set(parsedRows.map((r) => r.account))];
-
+      // 寫入後重新讀取這些學生「目前所有月份」的資料（含剛寫入的這個月），
+      // 同一份資料同時拿來：① 算累積總計（app_reading_totals）② 算本月榮譽卡差額
       const { data: allMonthly, error: sumErr } = await SUPABASE
         .from("app_reading_monthly")
-        .select("account, energy_added, books_added")
+        .select("account, year_month, total_energy_snapshot, total_books_snapshot")
         .in("account", accounts);
 
       if (sumErr) {
-        console.error("讀取月報加總失敗:", sumErr);
+        console.error("讀取月報資料失敗:", sumErr);
         throw new Error("讀取累積資料失敗：" + sumErr.message);
       }
 
-      const sumMap: Record<string, { energy: number; books: number }> = {};
+      // 每個學生所有月份的快照，方便查「最新月份」與「上個月」各自的值
+      const rowsByAccount: Record<string, { year_month: string; total_energy_snapshot: number; total_books_snapshot: number }[]> = {};
       for (const row of allMonthly ?? []) {
         const acc = row.account as string;
-        if (!sumMap[acc]) sumMap[acc] = { energy: 0, books: 0 };
-        sumMap[acc].energy += (row.energy_added as number) ?? 0;
-        sumMap[acc].books += (row.books_added as number) ?? 0;
+        if (!rowsByAccount[acc]) rowsByAccount[acc] = [];
+        rowsByAccount[acc].push({
+          year_month: row.year_month as string,
+          total_energy_snapshot: (row.total_energy_snapshot as number) ?? 0,
+          total_books_snapshot: (row.total_books_snapshot as number) ?? 0,
+        });
       }
 
-      const totalRows = accounts.map((acc) => ({
-        account: acc,
-        total_energy: sumMap[acc]?.energy ?? 0,
-        total_books: sumMap[acc]?.books ?? 0,
-        updated_at: now,
-      }));
+      // ① 累積總計：取該學生「最新一個月份」的快照值（不是加總）——
+      //    如果有更新的月份，一律以更新的為準，不管上傳順序為何
+      const totalRows = accounts.map((acc) => {
+        const accRows = rowsByAccount[acc] ?? [];
+        const latestRow = accRows.reduce((max, r) => (!max || r.year_month > max.year_month ? r : max), null as typeof accRows[number] | null);
+        return {
+          account: acc,
+          total_energy: latestRow?.total_energy_snapshot ?? 0,
+          total_books: latestRow?.total_books_snapshot ?? 0,
+          updated_at: now,
+        };
+      });
 
       const { error: totalErr } = await SUPABASE
         .from("app_reading_totals")
@@ -263,6 +284,54 @@ Deno.serve(async (req) => {
         console.error("app_reading_totals upsert error:", totalErr);
         throw new Error("寫入累積資料失敗：" + totalErr.message);
       }
+
+      // ② 榮譽卡張數：該月應發放張數 = floor(該月累積總能量/500) - floor(上月累積總能量/500)
+      //    直接用 Excel 自己回報的累積總能量（該月的用這次匯入的值；上月的用上個月匯入時存的快照，
+      //    沒有上月紀錄則視為 0），不是我們自己加總，跟哪些月份有沒有匯入無關。
+      const cardsMap: Record<string, number> = {};
+      for (const r of parsedRows) {
+        const accRows = rowsByAccount[r.account] ?? [];
+        const prevRow = accRows.find((row) => row.year_month === prevYm);
+        const targetSnapshot = r.total_energy; // 這次匯入、這個月自己的累積總能量
+        const prevSnapshot = prevRow?.total_energy_snapshot ?? 0; // 沒有上月紀錄 = 0
+        const cardsThisMonth = Math.max(
+          0,
+          Math.floor(targetSnapshot / 500) - Math.floor(prevSnapshot / 500)
+        );
+        cardsMap[r.account] = cardsThisMonth;
+      }
+
+      // 用正確的 cards_earned 回填這個月的月報列
+      const monthlyRowsFinal = parsedRows.map((r) => ({
+        account:    r.account,
+        year_month: target_year_month,
+        energy_added: r.monthly_energy,
+        books_added:  r.monthly_books,
+        total_energy_snapshot: r.total_energy,
+        total_books_snapshot:  r.total_books,
+        cards_earned: cardsMap[r.account] ?? 0,
+        created_at: now,
+      }));
+
+      const { error: monthlyFinalErr } = await SUPABASE
+        .from("app_reading_monthly")
+        .upsert(monthlyRowsFinal, { onConflict: "account,year_month" });
+
+      if (monthlyFinalErr) {
+        console.error("app_reading_monthly cards_earned 回填失敗:", monthlyFinalErr);
+        throw new Error("寫入榮譽卡張數失敗：" + monthlyFinalErr.message);
+      }
+
+      // 整理本月「新增」榮譽卡清單（張數 > 0 的學生），給後續寫入 Google 試算表用
+      newCards = parsedRows
+        .filter((r) => (cardsMap[r.account] ?? 0) > 0)
+        .map((r) => ({
+          account: r.account,
+          name: r.name,
+          class_id: r.class_id,
+          year_month: target_year_month,
+          cards_this_month: cardsMap[r.account],
+        }));
     }
 
     return new Response(
@@ -273,6 +342,7 @@ Deno.serve(async (req) => {
         ym_mismatch: ymMismatch
           ? { file_ym: mostCommonYm, target_ym: target_year_month }
           : null,
+        new_cards: newCards,
       }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );

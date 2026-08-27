@@ -1124,33 +1124,37 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   async function loadExportData() {
     setLoading(true);
     try {
-      // 動態找出資料庫中最新的一個月份，只統計截至該月份（含）的累積總能量/總本數
+      // 每個學生各自「最新一次月報」的「學生挖掘總能量/總本數」快照值（累積值，
+      // 學校自己系統算出來的，含匯入本系統前的歷史）——跟「學生能量」分頁同一套邏輯，
+      // 不是本月新增值，也不是我方加總。
       const [{ data: monthly, error: monthlyErr }, { data: users, error: usrErr }] = await Promise.all([
-        supabase.from("app_reading_monthly").select("account, year_month, energy_added, books_added"),
+        supabase.from("app_reading_monthly").select("account, year_month, total_energy_snapshot, total_books_snapshot"),
         supabase.from("app_users").select("account, name, class_id").eq("role", "student"),
       ]);
       if (monthlyErr) throw monthlyErr;
       if (usrErr) throw usrErr;
 
-      const latest = (monthly ?? []).reduce(
-        (max: string, r: any) => (r.year_month > max ? r.year_month : max),
-        ""
-      );
-      setLatestMonth(latest);
-
-      const sumMap: Record<string, { energy: number; books: number }> = {};
+      const latestByAccount: Record<string, { year_month: string; energy: number; books: number }> = {};
+      let latest = "";
       for (const r of monthly ?? []) {
-        if (latest && r.year_month > latest) continue;
         const acc = r.account as string;
-        if (!sumMap[acc]) sumMap[acc] = { energy: 0, books: 0 };
-        sumMap[acc].energy += (r.energy_added as number) ?? 0;
-        sumMap[acc].books += (r.books_added as number) ?? 0;
+        const ym = r.year_month as string;
+        if (ym > latest) latest = ym;
+        const cur = latestByAccount[acc];
+        if (!cur || ym > cur.year_month) {
+          latestByAccount[acc] = {
+            year_month: ym,
+            energy: (r.total_energy_snapshot as number) ?? 0,
+            books: (r.total_books_snapshot as number) ?? 0,
+          };
+        }
       }
+      setLatestMonth(latest);
 
       const userMap2: Record<string, {name: string; class_id: string}> = {};
       (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
 
-      const out = Object.entries(sumMap).map(([account, v]) => {
+      const out = Object.entries(latestByAccount).map(([account, v]) => {
         const u = userMap2[account];
         return {
           student_no: account,
@@ -1166,7 +1170,7 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
       if (out.length === 0) {
         toast.warning("此期間尚無資料，請先匯入 Excel 月報");
       } else {
-        toast.success(`已載入 ${out.length} 筆（資料統計至最新月份 ${latest}）`);
+        toast.success(`已載入 ${out.length} 筆（學生挖掘總能量/總本數，各自最新月報，最新至 ${latest}）`);
       }
     } catch (e: any) {
       toast.error("載入匯出資料失敗：" + String(e?.message ?? e));
@@ -1316,8 +1320,8 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
         <CardTitle>📤 匯出 Excel / 布可能量圖表下載</CardTitle>
         <CardDescription>
           匯出學期/學年總紀錄 Excel；並生成刻度 500 的長條圖（PNG）。
-          總能量／總本數統計至最新月份
-          {latestMonth ? <span className="font-mono font-bold text-amber-600"> {latestMonth}</span> : "（尚無資料）"}
+          採用各學生「最新一次月報」的學生挖掘總能量／總本數（累積值，含匯入本系統前的歷史）
+          {latestMonth ? <span className="font-mono font-bold text-amber-600">，最新至 {latestMonth}</span> : "（尚無資料）"}
           。
         </CardDescription>
       </CardHeader>
