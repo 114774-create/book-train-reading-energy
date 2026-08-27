@@ -140,11 +140,13 @@ export default function TeacherDashboard() {
         if (error) throw error;
       }
 
-      // 寫入 borrow_logs（student_id 為 uuid 型別先略過，只記 barcode + action）
+      // 寫入 borrow_logs（student_account 記錄真正借閱的學生帳號，
+      // 讓「哪個學生借了哪本書」的歷史記錄不會因為之後歸還而遺失）
       const logRows = targets.map((book) => ({
         barcode: book.barcode,
         action: "borrow",
         at: now,
+        student_account: selectedBorrower[book.barcode],
       }));
       await supabase.from("borrow_logs").insert(logRows);
 

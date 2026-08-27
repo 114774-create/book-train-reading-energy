@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import type { ThemeEvent } from "@/lib/types";
+import { IssueThemeEventRewardsPanel } from "@/components/admin/IssueThemeEventRewardsPanel";
 
 export function ThemeEventsTab() {
   const [events, setEvents] = useState<ThemeEvent[]>([]);
@@ -237,6 +238,8 @@ export function ThemeEventsTab() {
           </div>
         </CardContent>
       </Card>
+
+      <IssueThemeEventRewardsPanel />
     </div>
   );
 }

@@ -94,7 +94,7 @@ Deno.serve(async (req) => {
         barcode,
         action: "return",
         box_loan_id: box_loan_id,
-        created_at: new Date().toISOString(),
+        at: new Date().toISOString(),
       }));
 
       const { error: logErr } = await SUPABASE

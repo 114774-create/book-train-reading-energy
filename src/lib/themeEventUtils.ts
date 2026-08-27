@@ -36,30 +36,46 @@ export function matchesKeywords(bookTitle: string, keywords: string | null): boo
 
 /**
  * 計算學生在指定活動期間內借閱的不重複書籍數量
- * 依據書籍 ID 或書名進行去重
+ * 依據書籍 barcode 進行去重
+ *
+ * 注意：改查 borrow_logs（永久記錄，action='borrow'），
+ * 不查 books.borrowed_by ——因為書一旦被歸還，books.borrowed_by 會被清空，
+ * 用 books 查會漏算所有已經歸還的書。
  */
 export async function getUniqueBookCountForEvent(
   studentId: string,
   event: ThemeEvent
 ): Promise<number> {
-  // 查詢該學生在活動期間內的借閱紀錄
-  const { data, error } = await supabase
-    .from("books")
-    .select("barcode, title")
-    .gte("borrowed_at", event.start_date)
-    .lte("borrowed_at", event.end_date)
-    .eq("borrowed_by", studentId);
-  if (error) {
-    console.error("Error fetching borrowing records:", error);
+  // 該學生在活動期間內的借閱紀錄（不受之後是否歸還影響）
+  const { data: logs, error: logErr } = await supabase
+    .from("borrow_logs")
+    .select("barcode")
+    .eq("student_account", studentId)
+    .eq("action", "borrow")
+    .gte("at", `${event.start_date}T00:00:00`)
+    .lte("at", `${event.end_date}T23:59:59.999`);
+  if (logErr) {
+    console.error("Error fetching borrow logs:", logErr);
     return 0;
   }
-  // 篩選符合關鍵字的書籍
-  const matchingBooks = (data as any)?.filter((book: any) =>
+  const barcodes = [...new Set((logs as any)?.map((l: any) => l.barcode as string) ?? [])];
+  if (barcodes.length === 0) return 0;
+
+  // 補書名以便篩選關鍵字
+  const { data: books, error: bookErr } = await supabase
+    .from("books")
+    .select("barcode, title")
+    .in("barcode", barcodes);
+  if (bookErr) {
+    console.error("Error fetching book titles:", bookErr);
+    return 0;
+  }
+
+  const matchingBarcodes = (books as any)?.filter((book: any) =>
     matchesKeywords(book.title, event.keywords)
-  ) ?? [];
-  // 依據 barcode 去重（每本書只計算一次）
-  const uniqueBarcodes = new Set(matchingBooks.map((book: any) => book.barcode));
-  return uniqueBarcodes.size;
+  ).map((b: any) => b.barcode as string) ?? [];
+
+  return new Set(matchingBarcodes).size;
 }
 
 /**

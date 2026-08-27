@@ -14,6 +14,7 @@ import { supabase } from "@/lib/supabase";
 import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
 import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
+import { IssueHonorCardsPanel } from "@/components/admin/IssueHonorCardsPanel";
 import { LotteryManagementTab } from "@/components/admin/LotteryManagementTab";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
@@ -113,6 +114,7 @@ export default function AdminDashboard() {
   // 排行榜
   const [lbYm, setLbYm] = useState("");
   const [leaderboard, setLeaderboard] = useState<any>(null);
+  const [availableMonths, setAvailableMonths] = useState<string[]>([]);
 
   // 書箱管理
   const [boxLoans, setBoxLoans] = useState<any[]>([]);
@@ -129,7 +131,17 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => {
-    setLbYm(ymDefault);
+    let cancelled = false;
+    supabase
+      .from("app_reading_monthly")
+      .select("year_month")
+      .then(({ data }) => {
+        if (cancelled) return;
+        const months = [...new Set((data ?? []).map((r: any) => r.year_month as string))].sort().reverse();
+        setAvailableMonths(months);
+        setLbYm(months[0] ?? ymDefault);
+      });
+    return () => { cancelled = true; };
   }, [ymDefault]);
 
   // ★ 修改重點：前端先解析 PDF 文字，再傳 raw_text 給 Edge Function
@@ -808,6 +820,10 @@ export default function AdminDashboard() {
               )}
             </CardContent>
           </Card>
+
+          <div className="mt-4">
+            <IssueHonorCardsPanel />
+          </div>
         </TabsContent>
 
         <TabsContent value="users" className="mt-4">
@@ -1004,11 +1020,18 @@ export default function AdminDashboard() {
             <CardContent className="space-y-4">
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="space-y-1">
-                  <Label>月份（YYYY-MM）</Label>
-                  <Input value={lbYm} onChange={(e) => setLbYm(e.target.value)} placeholder={ymDefault} className="w-40" />
+                  <Label>月份</Label>
+                  <select
+                    className="h-9 rounded-md border bg-background px-3 text-sm w-40"
+                    value={lbYm}
+                    onChange={(e) => setLbYm(e.target.value)}
+                  >
+                    {availableMonths.length === 0 && <option value="">尚無資料</option>}
+                    {availableMonths.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
                 </div>
                 <div className="pt-6">
-                  <Button onClick={loadLeaderboard} disabled={loading}>查詢</Button>
+                  <Button onClick={loadLeaderboard} disabled={loading || !lbYm}>查詢</Button>
                 </div>
               </div>
               {leaderboard && (
@@ -1086,6 +1109,7 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
   const [selectedClass, setSelectedClass] = useState<ClassCode | "all">("all");
+  const [latestMonth, setLatestMonth] = useState<string>("");
 
   function ymRangeFor(roc: number, sem: "year" | "first" | "second") {
     const startYear = roc + 1911;
@@ -1100,26 +1124,41 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
   async function loadExportData() {
     setLoading(true);
     try {
-      // 直接從 app_reading_totals 取累積總能量，不從月報加總
-      const [{ data: totals, error: totErr }, { data: users, error: usrErr }] = await Promise.all([
-        supabase.from("app_reading_totals").select("account, total_energy, total_books"),
+      // 動態找出資料庫中最新的一個月份，只統計截至該月份（含）的累積總能量/總本數
+      const [{ data: monthly, error: monthlyErr }, { data: users, error: usrErr }] = await Promise.all([
+        supabase.from("app_reading_monthly").select("account, year_month, energy_added, books_added"),
         supabase.from("app_users").select("account, name, class_id").eq("role", "student"),
       ]);
-      if (totErr) throw totErr;
+      if (monthlyErr) throw monthlyErr;
       if (usrErr) throw usrErr;
+
+      const latest = (monthly ?? []).reduce(
+        (max: string, r: any) => (r.year_month > max ? r.year_month : max),
+        ""
+      );
+      setLatestMonth(latest);
+
+      const sumMap: Record<string, { energy: number; books: number }> = {};
+      for (const r of monthly ?? []) {
+        if (latest && r.year_month > latest) continue;
+        const acc = r.account as string;
+        if (!sumMap[acc]) sumMap[acc] = { energy: 0, books: 0 };
+        sumMap[acc].energy += (r.energy_added as number) ?? 0;
+        sumMap[acc].books += (r.books_added as number) ?? 0;
+      }
 
       const userMap2: Record<string, {name: string; class_id: string}> = {};
       (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
 
-      const out = (totals ?? []).map((r: any) => {
-        const u = userMap2[r.account];
+      const out = Object.entries(sumMap).map(([account, v]) => {
+        const u = userMap2[account];
         return {
-          student_no: r.account,
-          account: r.account,
-          name: u?.name ?? r.account,
+          student_no: account,
+          account,
+          name: u?.name ?? account,
           class_id: u?.class_id ?? null,
-          total_energy: r.total_energy ?? 0,
-          total_books: r.total_books ?? 0,
+          total_energy: v.energy,
+          total_books: v.books,
         };
       }).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));
 
@@ -1127,7 +1166,7 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
       if (out.length === 0) {
         toast.warning("此期間尚無資料，請先匯入 Excel 月報");
       } else {
-        toast.success(`已載入 ${out.length} 筆（${range.start} ~ ${range.end}）`);
+        toast.success(`已載入 ${out.length} 筆（資料統計至最新月份 ${latest}）`);
       }
     } catch (e: any) {
       toast.error("載入匯出資料失敗：" + String(e?.message ?? e));
@@ -1275,7 +1314,12 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
     <Card>
       <CardHeader>
         <CardTitle>📤 匯出 Excel / 布可能量圖表下載</CardTitle>
-        <CardDescription>匯出學期/學年總紀錄 Excel；並生成刻度 500 的長條圖（PNG）</CardDescription>
+        <CardDescription>
+          匯出學期/學年總紀錄 Excel；並生成刻度 500 的長條圖（PNG）。
+          總能量／總本數統計至最新月份
+          {latestMonth ? <span className="font-mono font-bold text-amber-600"> {latestMonth}</span> : "（尚無資料）"}
+          。
+        </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex items-end gap-3 flex-wrap">

@@ -61,3 +61,21 @@ jobs:
           supabase functions deploy sync-students \
             --project-ref "$SUPABASE_PROJECT_REF" \
             --no-verify-jwt
+
+      - name: Deploy issue-honor-cards (no JWT verify)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          supabase functions deploy issue-honor-cards \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --no-verify-jwt
+
+      - name: Deploy issue-theme-event-rewards (no JWT verify)
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
+        run: |
+          supabase functions deploy issue-theme-event-rewards \
+            --project-ref "$SUPABASE_PROJECT_REF" \
+            --no-verify-jwt
