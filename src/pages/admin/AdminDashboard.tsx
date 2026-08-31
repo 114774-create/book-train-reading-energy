@@ -281,9 +281,12 @@ export default function AdminDashboard() {
       }, { onConflict: "year_month" });
       await loadImportHistory();
 
-      const missingCount = (data.not_found ?? []).length;
-      if (missingCount > 0) {
-        toast.warning(`匯入完成 ${data.processed} 筆，但有 ${missingCount} 筆找不到對應學生`);
+      const missingStudentsCount = (data.missing_students ?? []).length;
+      const notFoundCount = (data.not_found ?? []).length;
+      if (missingStudentsCount > 0) {
+        toast.warning(`匯入完成 ${data.processed} 筆，但有 ${missingStudentsCount} 位學生名單裡有、這份月報卻沒出現，建議反映給人事主任`);
+      } else if (notFoundCount > 0) {
+        toast.success(`完成：處理 ${data.processed} 筆（${ym}）；另有 ${notFoundCount} 筆月報裡的姓名在學生名單找不到，通常是已畢業/轉學`);
       } else {
         toast.success(`完成：處理 ${data.processed} 筆（${ym}）`);
       }
@@ -739,7 +742,7 @@ export default function AdminDashboard() {
               <Button onClick={importExcel} disabled={loading}>開始匯入</Button>
 
               {excelImportResult && (
-                <div className="mt-4">
+                <div className="mt-4 space-y-3">
                   <div className="rounded-lg border bg-green-50 p-3 space-y-2">
                     <p className="text-sm font-medium">匯入結果：處理 {excelImportResult.processed} 筆</p>
                     {excelImportResult.ym_mismatch && (
@@ -747,30 +750,69 @@ export default function AdminDashboard() {
                         ⚠️ 年月不匹配：檔案中為 {excelImportResult.ym_mismatch.file_ym}，您輸入的是 {excelImportResult.ym_mismatch.target_ym}（已繼續匯入）
                       </p>
                     )}
-                    {(excelImportResult.not_found ?? []).length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-sm font-medium text-red-600">找不到對應學生的筆數：{(excelImportResult.not_found ?? []).length}</p>
-                        <div className="overflow-auto mt-2">
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>姓名</TableHead>
-                                <TableHead>推算帳號</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {(excelImportResult.not_found ?? []).map((m: any, idx: number) => (
-                                <TableRow key={idx}>
-                                  <TableCell>{m.name}</TableCell>
-                                  <TableCell className="font-mono">{m.account}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        </div>
-                      </div>
-                    )}
                   </div>
+
+                  {/* 學生名單有，但這份月報沒出現——可能是 OpenID 對應有問題，需要反映給人事主任 */}
+                  {(excelImportResult.missing_students ?? []).length > 0 && (
+                    <div className="rounded-lg border-2 border-red-300 bg-red-50 p-3 space-y-2">
+                      <p className="text-sm font-bold text-red-700">
+                        🚨 這 {(excelImportResult.missing_students ?? []).length} 位學生在名單裡，但這份月報完全沒出現
+                      </p>
+                      <p className="text-xs text-red-600">
+                        通常代表該生在學校原始系統的 OpenID 對應有問題，建議把下面名單反映給人事主任確認。
+                      </p>
+                      <div className="overflow-auto mt-2 max-h-56">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>帳號</TableHead>
+                              <TableHead>姓名</TableHead>
+                              <TableHead>班級</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(excelImportResult.missing_students ?? []).map((m: any, idx: number) => (
+                              <TableRow key={idx}>
+                                <TableCell className="font-mono">{m.account}</TableCell>
+                                <TableCell>{m.name}</TableCell>
+                                <TableCell>{m.class_id}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Excel 裡有、但學生名單找不到——通常是已畢業/轉學，不用擔心 */}
+                  {(excelImportResult.not_found ?? []).length > 0 && (
+                    <div className="rounded-lg border bg-gray-50 p-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-600">
+                        ℹ️ 月報裡有 {(excelImportResult.not_found ?? []).length} 筆在學生名單找不到對應
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        通常是該生已畢業或轉學、學生名單已經沒有這個人，不用特別處理。
+                      </p>
+                      <div className="overflow-auto mt-2 max-h-56">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>姓名</TableHead>
+                              <TableHead>推算帳號</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {(excelImportResult.not_found ?? []).map((m: any, idx: number) => (
+                              <TableRow key={idx}>
+                                <TableCell>{m.name}</TableCell>
+                                <TableCell className="font-mono">{m.account}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -1154,14 +1196,17 @@ function ExportPanel({ ymDefault }: { ymDefault: string }) {
       const userMap2: Record<string, {name: string; class_id: string}> = {};
       (users ?? []).forEach((u: any) => { userMap2[u.account] = u; });
 
-      const out = Object.entries(latestByAccount).map(([account, v]) => {
-        const u = userMap2[account];
-        return {
-          student_no: account,
-          account,
-          name: u?.name ?? account,
-          class_id: u?.class_id ?? null,
-          total_energy: v.energy,
+      // 只輸出「目前仍在學生名單裡」的帳號，避免已畢業/轉學的舊帳號殘留在匯出結果中
+      const out = Object.entries(userMap2)
+        .filter(([account]) => latestByAccount[account])
+        .map(([account, u]) => {
+          const v = latestByAccount[account];
+          return {
+            student_no: account,
+            account,
+            name: u?.name ?? account,
+            class_id: u?.class_id ?? null,
+            total_energy: v.energy,
           total_books: v.books,
         };
       }).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || String(a.student_no).localeCompare(String(b.student_no)));

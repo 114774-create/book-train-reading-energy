@@ -60,12 +60,21 @@ export function StudentEnergyTab() {
       setLatestMonth(latest);
 
       const userMap = new Map((users ?? []).map((u: any) => [u.account, u]));
-      const mapped: EnergyRow[] = Object.entries(latestByAccount).map(([account, v]) => {
-        const u = userMap.get(account);
-        return {
-          account,
-          name:         u?.name ?? account,
-          class_id:     u?.class_id ?? null,
+
+      // 只顯示「目前仍在學生名單裡」的帳號——避免已畢業/轉學、被 Google 試算表同步
+      // 移除的舊帳號，帶著歷史能量資料變成幽靈列殘留在畫面上。
+      // 注意：學生升年級後帳號會變（例如 20101 → 30101），這裡抓的是新帳號當下的
+      // 「學生挖掘總能量」快照值——因為那個數字是學校自己系統算的累積值，本來就含
+      // 歷年進度，不是本系統自己累加的，所以帳號變動不會讓能量歸零，只要新帳號當月
+      // 有匯入資料即可正確顯示。
+      const mapped: EnergyRow[] = Array.from(userMap.entries())
+        .filter(([account]) => latestByAccount[account])
+        .map(([account, u]) => {
+          const v = latestByAccount[account];
+          return {
+            account,
+            name:         u?.name ?? account,
+            class_id:     u?.class_id ?? null,
           total_energy: v.energy,
           total_books:  v.books,
         };

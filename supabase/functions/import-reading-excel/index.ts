@@ -208,6 +208,22 @@ Deno.serve(async (req) => {
     const mostCommonYm = Object.entries(ymCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
     const ymMismatch = mostCommonYm && mostCommonYm !== target_year_month;
 
+    // 反向檢查：目前「學生名單」裡有的學生，這份月報裡卻完全沒出現——
+    // 這通常代表該生在學校原始系統（例如 OpenID）對應有問題，需要請人事主任確認，
+    // 跟「Excel 裡有、但學生名單沒有」（notFoundNames，通常只是已畢業/轉學，可忽略）是相反方向、
+    // 意義完全不同的兩種狀況，分開回報。
+    const foundAccounts = new Set(parsedRows.map((r) => r.account));
+    const { data: allStudents, error: allStudentsErr } = await SUPABASE
+      .from("app_users")
+      .select("account, name, class_id")
+      .eq("role", "student");
+
+    const missingStudents = allStudentsErr
+      ? []
+      : (allStudents ?? [])
+          .filter((u: any) => !foundAccounts.has(u.account))
+          .map((u: any) => ({ account: u.account, name: u.name, class_id: u.class_id }));
+
     const now = new Date().toISOString();
     let newCards: { account: string; name: string; class_id: string; year_month: string; cards_this_month: number }[] = [];
 
@@ -339,6 +355,7 @@ Deno.serve(async (req) => {
         ok: true,
         processed: parsedRows.length,
         not_found: notFoundNames,
+        missing_students: missingStudents,
         ym_mismatch: ymMismatch
           ? { file_ym: mostCommonYm, target_ym: target_year_month }
           : null,
