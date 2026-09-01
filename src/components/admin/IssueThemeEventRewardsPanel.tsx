@@ -67,6 +67,7 @@ export function IssueThemeEventRewardsPanel() {
 
       const rows: PendingRow[] = [];
       for (const account of accounts) {
+        if (!nameMap[account]) continue; // 已離校（畢業/轉學）的舊帳號不顯示
         const uniqueCount = await getUniqueBookCountForEvent(account, event);
         const totalTimes = calculateRewardTimes(uniqueCount, event.target_count);
         const already = issuedMap[account] ?? 0;

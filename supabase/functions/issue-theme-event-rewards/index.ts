@@ -156,11 +156,27 @@ Deno.serve(async (req) => {
     const nameMap: Record<string, string> = {};
     (users ?? []).forEach((u: any) => { nameMap[u.account] = u.name; });
 
+    // 只發放給目前仍在學生名單裡的帳號——避免學生已經畢業/轉學，但過去的借閱歷史
+    // 還留在 borrow_logs 裡，誤觸發活動獎勵寫入 Google 試算表
+    const validPending = pending.filter((p) => nameMap[p.account]);
+    const skippedCount = pending.length - validPending.length;
+
+    if (validPending.length === 0) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          issued: 0,
+          message: `目前沒有可發放的活動獎勵（${skippedCount} 筆待發放記錄的學生已不在學生名單，已略過）`,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const now = new Date();
     const timeStr = formatSheetTime(now);
     const reason = event.event_name as string;
 
-    const sheetRows: (string | number)[][] = pending.map((p) => [
+    const sheetRows: (string | number)[][] = validPending.map((p) => [
       timeStr,
       p.account,
       p.points,
@@ -172,7 +188,7 @@ Deno.serve(async (req) => {
     await appendToSheet(accessToken, GOOGLE_SHEETS_ID, SHEET_NAME, sheetRows);
 
     // 寫入成功才更新已發放次數（累積次數，不是累加，因為 totalTimes 本身就是活動至今累積達成次數）
-    const upsertRows = pending.map((p) => ({
+    const upsertRows = validPending.map((p) => ({
       event_id,
       account: p.account,
       times_issued: p.totalTimes,
@@ -193,9 +209,10 @@ Deno.serve(async (req) => {
     return new Response(
       JSON.stringify({
         ok: true,
-        issued: pending.length,
+        issued: validPending.length,
+        skipped: skippedCount,
         event_name: reason,
-        details: pending.map((p) => ({
+        details: validPending.map((p) => ({
           account: p.account,
           name: nameMap[p.account] ?? p.account,
           new_times: p.deltaTimes,

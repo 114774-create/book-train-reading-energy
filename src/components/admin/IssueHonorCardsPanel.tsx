@@ -59,12 +59,14 @@ export function IssueHonorCardsPanel() {
         (users ?? []).forEach((u: any) => { userMap[u.account] = u; });
       }
 
-      const mapped: PendingRow[] = (rows ?? []).map((r: any) => ({
-        account: r.account,
-        name: userMap[r.account]?.name ?? r.account,
-        class_id: userMap[r.account]?.class_id ?? null,
-        cards_earned: r.cards_earned,
-      })).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
+      const mapped: PendingRow[] = (rows ?? [])
+        .filter((r: any) => userMap[r.account]) // 只處理目前仍在學生名單裡的帳號，避免誤發給已離校學生
+        .map((r: any) => ({
+          account: r.account,
+          name: userMap[r.account]?.name ?? r.account,
+          class_id: userMap[r.account]?.class_id ?? null,
+          cards_earned: r.cards_earned,
+        })).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
 
       setPending(mapped);
     } catch (e: any) {

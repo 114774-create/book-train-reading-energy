@@ -77,20 +77,39 @@ Deno.serve(async (req) => {
       );
     }
 
-    const accounts = pendingRows.map((r: any) => r.account as string);
+    const rawAccounts = pendingRows.map((r: any) => r.account as string);
 
     // 補學生姓名（Google Sheets 的 Student ID 欄位用學生帳號，跟你給的範例「60107」一致）
     const { data: users } = await SUPABASE
       .from("app_users")
       .select("account, name")
-      .in("account", accounts);
+      .in("account", rawAccounts);
     const nameMap: Record<string, string> = {};
     (users ?? []).forEach((u: any) => { nameMap[u.account] = u.name; });
+
+    // 只處理目前仍在學生名單裡的帳號，避免把已離校（畢業/轉學）學生尚未發放的舊記錄
+    // 誤發到 Google 試算表——這種情況通常發生在「學生在畢業前某個月賺到榮譽卡，
+    // 但在管理員按下發放之前就已經離校」。
+    const validPendingRows = pendingRows.filter((r: any) => nameMap[r.account as string]);
+    const skippedCount = pendingRows.length - validPendingRows.length;
+
+    if (validPendingRows.length === 0) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          issued: 0,
+          message: `${year_month} 沒有可發放的榮譽卡（${skippedCount} 筆待發放記錄的學生已不在學生名單，已略過）`,
+        }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const accounts = validPendingRows.map((r: any) => r.account as string);
 
     const now = new Date();
     const timeStr = formatSheetTime(now);
 
-    const sheetRows: (string | number)[][] = pendingRows.map((r: any) => [
+    const sheetRows: (string | number)[][] = validPendingRows.map((r: any) => [
       timeStr,
       r.account,
       (r.cards_earned as number) * POINTS_PER_CARD,
@@ -120,9 +139,10 @@ Deno.serve(async (req) => {
     return new Response(
       JSON.stringify({
         ok: true,
-        issued: pendingRows.length,
+        issued: validPendingRows.length,
+        skipped: skippedCount,
         year_month,
-        details: pendingRows.map((r: any) => ({
+        details: validPendingRows.map((r: any) => ({
           account: r.account,
           name: nameMap[r.account] ?? r.account,
           cards: r.cards_earned,
