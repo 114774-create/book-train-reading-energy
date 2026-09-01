@@ -121,6 +121,14 @@ export default function TeacherDashboard() {
       return toast.error(`請為 ${missing.length} 本書選擇借閱學生`);
     }
 
+    // 二次確認：列出「書名 → 學生」完整對照，避免勾選/選錯人卻沒發現就直接送出
+    const studentNameMap: Record<string, string> = {};
+    students.forEach((s) => { studentNameMap[s.account] = s.name; });
+    const summary = targets
+      .map((b) => `《${b.title}》 → ${studentNameMap[selectedBorrower[b.barcode]] ?? selectedBorrower[b.barcode]}`)
+      .join("\n");
+    if (!confirm(`確定要借出以下 ${targets.length} 本書嗎？\n\n${summary}`)) return;
+
     setProcessing(true);
     const t = toast.loading(`借出 ${targets.length} 本書中…`);
     try {
@@ -299,7 +307,7 @@ export default function TeacherDashboard() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">勾選</TableHead>
-                    <TableHead className="w-44">借給學生</TableHead>
+                    <TableHead className="w-56">借給學生</TableHead>
                     <TableHead>登錄號</TableHead>
                     <TableHead>書名</TableHead>
                     <TableHead>作者</TableHead>
@@ -321,7 +329,7 @@ export default function TeacherDashboard() {
                       </TableCell>
                       <TableCell>
                         <select
-                          className="h-8 w-full rounded-md border bg-background px-2 text-sm"
+                          className="h-11 w-full rounded-md border bg-background px-3 text-base"
                           value={selectedBorrower[book.barcode] ?? ""}
                           onChange={(e) => {
                             const val = e.target.value;
