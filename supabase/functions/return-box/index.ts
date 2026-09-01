@@ -62,25 +62,31 @@ Deno.serve(async (req) => {
 
     const declaredBookCount = boxLoan.book_count ?? 0;
 
-    // 2) 查詢該 box_loan 底下的所有 borrowed 書籍
-    const { data: borrowedBooks, error: bookErr } = await SUPABASE
+    // 2) 查詢該 box_loan（用 box_code）底下「所有」書籍——
+    //    不能只抓 status='borrowed' 的書，因為可能有書已經先被學生個別還給老師
+    //    （status 已經是 available，但 borrowing_class 還留著班級代碼），
+    //    如果只抓 borrowed 的書，這些已經個別歸還過的書會被漏掉，
+    //    導致 borrowing_class 永遠沒被清空、書卡在「可借閱但還算某班的」的錯誤狀態。
+    const { data: boxBooks, error: bookErr } = await SUPABASE
       .from("books")
       .select("barcode")
-      .eq("status", "borrowed")
       .eq("box_code", boxLoan.box_code);
 
     if (bookErr) throw bookErr;
 
-    const borrowedBarcodes = (borrowedBooks ?? []).map((b: any) => b.barcode);
+    const borrowedBarcodes = (boxBooks ?? []).map((b: any) => b.barcode);
     const returnedCount = borrowedBarcodes.length;
 
-    // 3) 將所有 status='borrowed' 的書改成 status='available'，清空 borrowing_class
+    // 3) 把這個書箱底下所有書統一改成 status='available'、清空 borrowing_class，
+    //    不管它們目前個別狀態是 borrowed 還是已經 available，一律處理
+    //    （對已經是 available 的書重複設定一次沒有副作用，只是確保 borrowing_class 一定被清空）
+    //    注意：borrowing_class 欄位有 NOT NULL 限制，不能塞 null，這裡用空字串 "" 代表「未分配任何班級」
     if (borrowedBarcodes.length > 0) {
       const { error: updateErr } = await SUPABASE
         .from("books")
         .update({
           status: "available",
-          borrowing_class: null,
+          borrowing_class: "",
           return_date: null,
           borrowed_by: null,
           borrowed_at: null,
