@@ -329,7 +329,7 @@ export default function TeacherDashboard() {
                       </TableCell>
                       <TableCell>
                         <select
-                          className="h-11 w-full rounded-md border bg-background px-3 text-base"
+                          className="h-11 w-full min-w-[180px] rounded-md border bg-background px-3 text-base"
                           value={selectedBorrower[book.barcode] ?? ""}
                           onChange={(e) => {
                             const val = e.target.value;
@@ -342,7 +342,7 @@ export default function TeacherDashboard() {
                           <option value="">— 選學生 —</option>
                           {students.map((s) => (
                             <option key={s.account} value={s.account}>
-                              {s.name}（{s.account}）
+                              {s.name}
                             </option>
                           ))}
                         </select>
