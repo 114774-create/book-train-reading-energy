@@ -1,0 +1,18 @@
+name: Supabase Keep Alive
+
+on:
+  schedule:
+    # 預設每週三與週日凌晨 0 點 (UTC 時間) 自動執行
+    - cron: '0 0 * * 0,3'
+  workflow_dispatch: # 保留此設定，即可在 GitHub Actions 後台手動點擊測試
+
+jobs:
+  ping-database:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send API Request to Supabase
+        run: |
+          # ⚠️ 注意：請確保下方的 keep_alive 是該專案資料庫中真實存在的資料表名稱
+          curl -X GET "${{ secrets.SUPABASE_URL }}/rest/v1/keep_alive?select=*&limit=1" \
+          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
