@@ -21,6 +21,7 @@ interface PendingRow {
   name: string;
   class_id: string | null;
   cards_earned: number;
+  total_energy_snapshot: number;
 }
 
 export function IssueHonorCardsPanel() {
@@ -43,7 +44,7 @@ export function IssueHonorCardsPanel() {
     try {
       const { data: rows, error } = await supabase
         .from("app_reading_monthly")
-        .select("account, cards_earned")
+        .select("account, cards_earned, total_energy_snapshot")
         .eq("year_month", ym)
         .eq("cards_issued", false)
         .gt("cards_earned", 0);
@@ -66,6 +67,7 @@ export function IssueHonorCardsPanel() {
           name: userMap[r.account]?.name ?? r.account,
           class_id: userMap[r.account]?.class_id ?? null,
           cards_earned: r.cards_earned,
+          total_energy_snapshot: (r.total_energy_snapshot as number) ?? 0,
         })).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
 
       setPending(mapped);
@@ -112,6 +114,35 @@ export function IssueHonorCardsPanel() {
     }
   }
 
+  async function handleMarkIssued() {
+    if (!selectedMonth) return;
+    if (pending.length === 0) return toast.error("目前沒有待標記的榮譽卡");
+    if (!confirm(
+      `確定要把 ${selectedMonth} 這 ${pending.length} 位學生標記為「已發放」嗎？\n\n` +
+      `⚠️ 這個動作只會標記狀態，不會寫入 Google 試算表。\n` +
+      `適用於這批點數你已經用其他方式（例如系統啟用前的基礎資料）發放過的情況，避免之後被系統重複發放。`
+    )) return;
+
+    setIssuing(true);
+    try {
+      const accounts = pending.map((r) => r.account);
+      const { error } = await supabase
+        .from("app_reading_monthly")
+        .update({ cards_issued: true, cards_issued_at: new Date().toISOString() })
+        .eq("year_month", selectedMonth)
+        .eq("cards_issued", false)
+        .in("account", accounts);
+      if (error) throw error;
+
+      toast.success(`已將 ${accounts.length} 位學生標記為已發放（未寫入 Google 試算表）`);
+      await loadPending(selectedMonth);
+    } catch (e: any) {
+      toast.error("標記失敗：" + String(e?.message ?? e));
+    } finally {
+      setIssuing(false);
+    }
+  }
+
   const totalPoints = pending.reduce((s, r) => s + r.cards_earned * POINTS_PER_CARD, 0);
 
   return (
@@ -121,7 +152,9 @@ export function IssueHonorCardsPanel() {
           <div>
             <CardTitle className="text-base">🏅 發放榮譽卡（寫入 Google 試算表）</CardTitle>
             <CardDescription>
-              500 能量＝1 張榮譽卡＝10 點；手動按鈕觸發，已發放過的不會重複列出
+              500 能量＝1 張榮譽卡＝10 點；手動按鈕觸發，已發放過的不會重複列出。
+              如果這批點數已經用其他方式發放過（例如系統啟用前的基礎資料），
+              用「已發放」只標記狀態、不會重複寫入 Google 試算表。
             </CardDescription>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -155,9 +188,18 @@ export function IssueHonorCardsPanel() {
                 <span className="font-bold text-amber-700"> {pending.length} </span>位學生，
                 共 <span className="font-bold text-amber-700">{totalPoints}</span> 點
               </div>
-              <Button onClick={handleIssue} disabled={issuing || pending.length === 0} className="bg-amber-500 hover:bg-amber-600">
-                {issuing ? "發放中…" : "發放到 Google 試算表"}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={handleMarkIssued}
+                  disabled={issuing || pending.length === 0}
+                  variant="outline"
+                >
+                  已發放（不寫入試算表）
+                </Button>
+                <Button onClick={handleIssue} disabled={issuing || pending.length === 0} className="bg-amber-500 hover:bg-amber-600">
+                  {issuing ? "發放中…" : "發放到 Google 試算表"}
+                </Button>
+              </div>
             </div>
             <div className="overflow-auto max-h-72">
               <Table>
@@ -167,7 +209,8 @@ export function IssueHonorCardsPanel() {
                     <TableHead>姓名</TableHead>
                     <TableHead>班級</TableHead>
                     <TableHead className="text-right">新增張數</TableHead>
-                    <TableHead className="text-right">點數</TableHead>
+                    <TableHead className="text-right">本次點數</TableHead>
+                    <TableHead className="text-right">目前點數（累積）</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -178,6 +221,9 @@ export function IssueHonorCardsPanel() {
                       <TableCell className="text-sm">{CLASS_LABELS[r.class_id ?? ""] ?? r.class_id ?? ""}</TableCell>
                       <TableCell className="text-right font-bold text-amber-600">{r.cards_earned}</TableCell>
                       <TableCell className="text-right">{r.cards_earned * POINTS_PER_CARD}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {Math.floor(r.total_energy_snapshot / 500) * POINTS_PER_CARD}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
