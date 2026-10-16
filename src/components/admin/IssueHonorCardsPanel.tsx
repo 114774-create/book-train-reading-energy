@@ -211,8 +211,8 @@ export function IssueHonorCardsPanel() {
                     <TableHead>姓名</TableHead>
                     <TableHead>班級</TableHead>
                     <TableHead className="text-right">新增張數</TableHead>
-                    <TableHead className="text-right">本月挖掘能量</TableHead>
-                    <TableHead className="text-right">學生挖掘總能量（累積）</TableHead>
+                    <TableHead className="text-right">本月能量</TableHead>
+                    <TableHead className="text-right">目前累積能量</TableHead>
                     <TableHead className="text-right">發放點數</TableHead>
                   </TableRow>
                 </TableHeader>
