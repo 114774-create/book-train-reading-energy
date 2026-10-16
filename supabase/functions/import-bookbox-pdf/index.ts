@@ -214,14 +214,19 @@ Deno.serve(async (req) => {
     }
 
     // 解析
-    const parsed = parseBoxPDF(rawText);
+    // 正規化：某些瀏覽器/PDF 產生流程，會把「日」「人」「月」等常用字換成
+    // 外觀幾乎一樣、但 Unicode 碼位不同的康熙部首變體字（例如「日」變成「⽇」），
+    // 導致下面比對「借閱日期」「應還日期」「代表人」等欄位的 regex 比對失敗、
+    // 解析出空白。NFKC 正規化可以把這些變體字統一轉回標準字，不影響其他正常文字。
+    const normalizedText = rawText.normalize("NFKC");
+    const parsed = parseBoxPDF(normalizedText);
 
     if (!parsed.box_code) {
       return new Response(
         JSON.stringify({
           ok: false,
           error: "無法解析書箱編號（BOXxxxx），請確認 PDF 格式正確",
-          raw_preview: rawText.slice(0, 300),
+          raw_preview: normalizedText.slice(0, 300),
         }),
         { status: 422, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

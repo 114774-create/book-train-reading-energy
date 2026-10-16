@@ -21,6 +21,7 @@ interface PendingRow {
   name: string;
   class_id: string | null;
   cards_earned: number;
+  energy_added: number;
   total_energy_snapshot: number;
 }
 
@@ -44,7 +45,7 @@ export function IssueHonorCardsPanel() {
     try {
       const { data: rows, error } = await supabase
         .from("app_reading_monthly")
-        .select("account, cards_earned, total_energy_snapshot")
+        .select("account, cards_earned, energy_added, total_energy_snapshot")
         .eq("year_month", ym)
         .eq("cards_issued", false)
         .gt("cards_earned", 0);
@@ -67,6 +68,7 @@ export function IssueHonorCardsPanel() {
           name: userMap[r.account]?.name ?? r.account,
           class_id: userMap[r.account]?.class_id ?? null,
           cards_earned: r.cards_earned,
+          energy_added: (r.energy_added as number) ?? 0,
           total_energy_snapshot: (r.total_energy_snapshot as number) ?? 0,
         })).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
 
@@ -209,8 +211,9 @@ export function IssueHonorCardsPanel() {
                     <TableHead>姓名</TableHead>
                     <TableHead>班級</TableHead>
                     <TableHead className="text-right">新增張數</TableHead>
-                    <TableHead className="text-right">本次點數</TableHead>
-                    <TableHead className="text-right">目前點數（累積）</TableHead>
+                    <TableHead className="text-right">本月挖掘能量</TableHead>
+                    <TableHead className="text-right">學生挖掘總能量（累積）</TableHead>
+                    <TableHead className="text-right">發放點數</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -220,10 +223,9 @@ export function IssueHonorCardsPanel() {
                       <TableCell className="font-medium">{r.name}</TableCell>
                       <TableCell className="text-sm">{CLASS_LABELS[r.class_id ?? ""] ?? r.class_id ?? ""}</TableCell>
                       <TableCell className="text-right font-bold text-amber-600">{r.cards_earned}</TableCell>
+                      <TableCell className="text-right">{r.energy_added}</TableCell>
+                      <TableCell className="text-right text-muted-foreground">{r.total_energy_snapshot}</TableCell>
                       <TableCell className="text-right">{r.cards_earned * POINTS_PER_CARD}</TableCell>
-                      <TableCell className="text-right text-muted-foreground">
-                        {Math.floor(r.total_energy_snapshot / 500) * POINTS_PER_CARD}
-                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
