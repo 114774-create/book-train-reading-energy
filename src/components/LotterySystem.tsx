@@ -1,6 +1,9 @@
 // src/components/LotterySystem.tsx
 // 布可列車抽獎系統
-// 抽獎權重：借1本=1籤，借2本以上=2籤
+// 抽獎規則（與「每月排行榜」一致）：
+//   資格：本月借閱 2 本以上
+//   排名：本月挖掘能量優先、本月本數次之（在目前選的範圍內排名：全校或單一班級）
+//   機會：第一名 2 次，其餘每人 1 次（並列第一者都算第一名）
 // 需要 Supabase 連線，從 app_reading_monthly 取資料
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -12,12 +15,18 @@ const CLASS_LABELS: Record<string, string> = {
   "401": "四甲", "501": "五甲", "601": "六甲",
 };
 
+const MIN_BOOKS = 2;          // 資格門檻：本月至少借閱幾本
+const FIRST_PLACE_TICKETS = 2; // 第一名的抽獎次數
+const OTHER_TICKETS = 1;       // 其餘參加者的抽獎次數
+
 interface Student {
   account: string;
   name: string;
   class_id: string;
   books_added: number;
-  tickets: number; // 1 or 2
+  energy_added: number;
+  rank: number;    // 名次（能量、本數都相同視為並列）
+  tickets: number; // FIRST_PLACE_TICKETS 或 OTHER_TICKETS
 }
 
 interface Winner {
@@ -130,9 +139,9 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
 
     const query = supabase
       .from("app_reading_monthly")
-      .select("account, books_added")
+      .select("account, books_added, energy_added")
       .eq("year_month", selectedMonth)
-      .gte("books_added", 1);
+      .gte("books_added", MIN_BOOKS);
 
     const { data: monthly } = await query;
 
@@ -156,7 +165,9 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
           name: u.name ?? r.account,
           class_id: u.class_id ?? "",
           books_added: r.books_added ?? 0,
-          tickets: Math.min(r.books_added ?? 0, 2),
+          energy_added: r.energy_added ?? 0,
+          rank: 0,    // 依選擇的範圍在 filtered 重新計算
+          tickets: OTHER_TICKETS,
         };
       })
       .filter(Boolean) as Student[];
@@ -170,16 +181,28 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
     if (authed && selectedMonth) loadStudents();
   }, [selectedMonth, authed]);
 
+  // 目前範圍（全校或單一班級）內的參加者，依「能量優先、本數次之」排名，
+  // 第一名（並列也算）FIRST_PLACE_TICKETS 次，其餘 OTHER_TICKETS 次
   const filtered = useMemo(() => {
-    if (selectedClass === "all") return students;
-    return students.filter(s => s.class_id === selectedClass);
+    const scoped = selectedClass === "all" ? students : students.filter(s => s.class_id === selectedClass);
+    const sorted = [...scoped].sort(
+      (a, b) =>
+        b.energy_added - a.energy_added ||
+        b.books_added - a.books_added ||
+        a.name.localeCompare(b.name, "zh-Hant")
+    );
+    let prev: Student | null = null;
+    let currentRank = 0;
+    return sorted.map((s, i) => {
+      if (!prev || s.energy_added !== prev.energy_added || s.books_added !== prev.books_added) {
+        currentRank = i + 1;
+      }
+      prev = s;
+      return { ...s, rank: currentRank, tickets: currentRank === 1 ? FIRST_PLACE_TICKETS : OTHER_TICKETS };
+    });
   }, [students, selectedClass]);
 
   const totalTickets = filtered.reduce((s, r) => s + r.tickets, 0);
-
-  const sortedParticipants = useMemo(() => {
-    return [...filtered].sort((a, b) => b.tickets - a.tickets || a.name.localeCompare(b.name, "zh-Hant"));
-  }, [filtered]);
 
   // 抽獎動畫
   async function startDraw() {
@@ -356,6 +379,12 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
             </div>
           </div>
 
+          {/* 抽獎規則 */}
+          <p className="text-xs text-gray-500 bg-gray-50 rounded-xl px-3 py-2">
+            資格：本月借閱 {MIN_BOOKS} 本以上　排名：能量優先、本數次之　
+            機會：第一名 {FIRST_PLACE_TICKETS} 次，其餘每人 {OTHER_TICKETS} 次
+          </p>
+
           {/* 統計 */}
           {dataReady && (
             <div className="flex gap-3">
@@ -388,17 +417,21 @@ export default function LotterySystem({ onClose }: LotterySystemProps) {
               {showParticipants && (
                 <div className="max-h-48 overflow-y-auto p-3">
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {sortedParticipants.map(s => {
+                    {filtered.map(s => {
                       const isWinner = winners.some(w => w.account === s.account);
                       return (
                         <div
                           key={s.account}
                           className={`flex items-center justify-between gap-2 rounded-xl border px-3 py-1.5 text-sm ${isWinner ? "bg-amber-50 border-amber-300" : "bg-white border-gray-100"}`}
                         >
-                          <span className={`font-medium truncate ${isWinner ? "text-amber-700" : "text-gray-700"}`}>
-                            {isWinner ? "🏆 " : ""}{maskName(s.name)}
-                          </span>
-                          <span className="shrink-0 text-xs font-bold text-orange-500 bg-orange-50 rounded-full px-2 py-0.5">
+                          <div className="min-w-0">
+                            <div className={`font-medium truncate ${isWinner ? "text-amber-700" : "text-gray-700"}`}>
+                              <span className="text-xs text-gray-400 mr-1">#{s.rank}</span>
+                              {isWinner ? "🏆 " : ""}{maskName(s.name)}
+                            </div>
+                            <div className="text-[11px] text-gray-400">能量 {s.energy_added}・{s.books_added} 本</div>
+                          </div>
+                          <span className={`shrink-0 text-xs font-bold rounded-full px-2 py-0.5 ${s.tickets > OTHER_TICKETS ? "text-white bg-amber-500" : "text-orange-500 bg-orange-50"}`}>
                             ⛏️ ×{s.tickets}
                           </span>
                         </div>

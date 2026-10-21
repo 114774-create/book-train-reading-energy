@@ -31,15 +31,6 @@ function safeParseInt(s: any): number | null {
   return isNaN(n) ? null : n;
 }
 
-function prevYearMonth(ym: string): string {
-  const [y, m] = ym.split("-").map(Number);
-  const d = new Date(Date.UTC(y, m - 1, 1));
-  d.setUTCMonth(d.getUTCMonth() - 1);
-  const py = d.getUTCFullYear();
-  const pm = String(d.getUTCMonth() + 1).padStart(2, "0");
-  return `${py}-${pm}`;
-}
-
 interface ParsedRow {
   account: string;
   name: string;
@@ -229,7 +220,6 @@ Deno.serve(async (req) => {
 
     if (parsedRows.length > 0) {
       const accounts = [...new Set(parsedRows.map((r) => r.account))];
-      const prevYm = prevYearMonth(target_year_month);
 
       // 第一次寫入 app_reading_monthly（cards_earned 先用 0 佔位，稍後用正確公式回填）
       // total_energy_snapshot / total_books_snapshot：直接存 Excel 自己的「學生挖掘總能量/總本數」
@@ -268,14 +258,14 @@ Deno.serve(async (req) => {
       }
 
       // 每個學生所有月份的快照，方便查「最新月份」與「上個月」各自的值
-      const rowsByAccount: Record<string, { year_month: string; total_energy_snapshot: number; total_books_snapshot: number }[]> = {};
+      const rowsByAccount: Record<string, { year_month: string; total_energy_snapshot: number | null; total_books_snapshot: number | null }[]> = {};
       for (const row of allMonthly ?? []) {
         const acc = row.account as string;
         if (!rowsByAccount[acc]) rowsByAccount[acc] = [];
         rowsByAccount[acc].push({
           year_month: row.year_month as string,
-          total_energy_snapshot: (row.total_energy_snapshot as number) ?? 0,
-          total_books_snapshot: (row.total_books_snapshot as number) ?? 0,
+          total_energy_snapshot: (row.total_energy_snapshot as number | null) ?? null,
+          total_books_snapshot: (row.total_books_snapshot as number | null) ?? null,
         });
       }
 
@@ -301,20 +291,32 @@ Deno.serve(async (req) => {
         throw new Error("寫入累積資料失敗：" + totalErr.message);
       }
 
-      // ② 榮譽卡張數：該月應發放張數 = floor(該月累積總能量/500) - floor(上月累積總能量/500)
-      //    直接用 Excel 自己回報的累積總能量（該月的用這次匯入的值；上月的用上個月匯入時存的快照，
-      //    沒有上月紀錄則視為 0），不是我們自己加總，跟哪些月份有沒有匯入無關。
+      // ② 榮譽卡張數：該月應發放張數 = floor(該月累積總能量/500) - floor(前期累積總能量/500)
+      //    「前期累積總能量」依序取：
+      //      (a) 這位學生「比本月更早」的最近一次報表的累積快照（正好是上個月最好；
+      //          中間隔了寒暑假沒有報表，就取更早的最近一次）；
+      //      (b) 完全沒有更早的報表時，用「本月累積 − 本月能量」推算
+      //          （等於本月之前的累積；升年級後帳號改變、沒有舊紀錄時也適用）。
+      //    不再把「沒有前月紀錄」當成 0——那會在第一次匯入、或隔了暑假後，
+      //    把學生過去已經領過的張數整批重算一次。
       const cardsMap: Record<string, number> = {};
       for (const r of parsedRows) {
         const accRows = rowsByAccount[r.account] ?? [];
-        const prevRow = accRows.find((row) => row.year_month === prevYm);
+        const earlier = accRows.filter(
+          (row) => row.year_month < target_year_month && row.total_energy_snapshot !== null
+        );
+        const prevRow = earlier.reduce(
+          (max, row) => (!max || row.year_month > max.year_month ? row : max),
+          null as typeof earlier[number] | null
+        );
         const targetSnapshot = r.total_energy; // 這次匯入、這個月自己的累積總能量
-        const prevSnapshot = prevRow?.total_energy_snapshot ?? 0; // 沒有上月紀錄 = 0
-        const cardsThisMonth = Math.max(
+        const prevSnapshot = prevRow
+          ? (prevRow.total_energy_snapshot as number)
+          : Math.max(0, r.total_energy - r.monthly_energy);
+        cardsMap[r.account] = Math.max(
           0,
           Math.floor(targetSnapshot / 500) - Math.floor(prevSnapshot / 500)
         );
-        cardsMap[r.account] = cardsThisMonth;
       }
 
       // 用正確的 cards_earned 回填這個月的月報列

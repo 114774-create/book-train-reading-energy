@@ -23,6 +23,19 @@ interface PendingRow {
   cards_earned: number;
   energy_added: number;
   total_energy_snapshot: number;
+  prev_energy: number;        // 前月累積能量
+  prev_source: "prev_month" | "earlier" | "derived"; // 上個月報表 / 更早的最近一次報表 / 推算
+  prev_ym: string | null;     // 取自哪個月份的報表（推算時為 null）
+  derived_prev: number;       // 目前累積 − 本月（推算值）
+  expected_cards: number;     // 依前月能量推算本月應新增張數
+}
+
+// 上一個月（YYYY-MM）
+function prevYearMonth(ym: string): string {
+  const [y, m] = ym.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m - 1, 1));
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 export function IssueHonorCardsPanel() {
@@ -61,16 +74,46 @@ export function IssueHonorCardsPanel() {
         (users ?? []).forEach((u: any) => { userMap[u.account] = u; });
       }
 
+      // 每位學生「比本月更早」的最近一次報表累積能量（跟匯入時算榮譽卡用的是同一套規則）
+      const prevMap: Record<string, { ym: string; energy: number }> = {};
+      if (accounts.length > 0) {
+        const { data: prevRows } = await supabase
+          .from("app_reading_monthly")
+          .select("account, year_month, total_energy_snapshot")
+          .lt("year_month", ym)
+          .not("total_energy_snapshot", "is", null)
+          .in("account", accounts)
+          .order("year_month", { ascending: false });
+        (prevRows ?? []).forEach((r: any) => {
+          // 已依月份由新到舊排序，每個帳號第一筆就是最近一次
+          if (!prevMap[r.account]) prevMap[r.account] = { ym: r.year_month, energy: r.total_energy_snapshot as number };
+        });
+      }
+      const exactPrevYm = prevYearMonth(ym);
+
       const mapped: PendingRow[] = (rows ?? [])
         .filter((r: any) => userMap[r.account]) // 只處理目前仍在學生名單裡的帳號，避免誤發給已離校學生
-        .map((r: any) => ({
-          account: r.account,
-          name: userMap[r.account]?.name ?? r.account,
-          class_id: userMap[r.account]?.class_id ?? null,
-          cards_earned: r.cards_earned,
-          energy_added: (r.energy_added as number) ?? 0,
-          total_energy_snapshot: (r.total_energy_snapshot as number) ?? 0,
-        })).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
+        .map((r: any) => {
+          const total = (r.total_energy_snapshot as number) ?? 0;
+          const monthly = (r.energy_added as number) ?? 0;
+          const derivedPrev = Math.max(0, total - monthly);
+          const found = prevMap[r.account];
+          const prevEnergy = found ? found.energy : derivedPrev;
+          const source: PendingRow["prev_source"] = !found ? "derived" : found.ym === exactPrevYm ? "prev_month" : "earlier";
+          return {
+            account: r.account,
+            name: userMap[r.account]?.name ?? r.account,
+            class_id: userMap[r.account]?.class_id ?? null,
+            cards_earned: r.cards_earned,
+            energy_added: monthly,
+            total_energy_snapshot: total,
+            prev_energy: prevEnergy,
+            prev_source: source,
+            prev_ym: found?.ym ?? null,
+            derived_prev: derivedPrev,
+            expected_cards: Math.max(0, Math.floor(total / 500) - Math.floor(prevEnergy / 500)),
+          };
+        }).sort((a, b) => String(a.class_id ?? "").localeCompare(String(b.class_id ?? "")) || a.account.localeCompare(b.account));
 
       setPending(mapped);
     } catch (e: any) {
@@ -203,6 +246,10 @@ export function IssueHonorCardsPanel() {
                 </Button>
               </div>
             </div>
+            <p className="text-xs text-muted-foreground">
+              前月能量 + 本月能量 = 目前累積能量。沒有上個月的報表時，取更早的最近一次報表（標示「取自 YYYY-MM」）；
+              完全沒有更早報表時，前月能量 = 目前累積能量 − 本月能量（標示「推算」）。⚠ 表示不一致，滑鼠移上去可看原因。
+            </p>
             <div className="overflow-auto max-h-72">
               <Table>
                 <TableHeader>
@@ -211,6 +258,7 @@ export function IssueHonorCardsPanel() {
                     <TableHead>姓名</TableHead>
                     <TableHead>班級</TableHead>
                     <TableHead className="text-right">新增張數</TableHead>
+                    <TableHead className="text-right">前月能量</TableHead>
                     <TableHead className="text-right">本月能量</TableHead>
                     <TableHead className="text-right">目前累積能量</TableHead>
                     <TableHead className="text-right">發放點數</TableHead>
@@ -222,7 +270,28 @@ export function IssueHonorCardsPanel() {
                       <TableCell className="font-mono text-sm">{r.account}</TableCell>
                       <TableCell className="font-medium">{r.name}</TableCell>
                       <TableCell className="text-sm">{CLASS_LABELS[r.class_id ?? ""] ?? r.class_id ?? ""}</TableCell>
-                      <TableCell className="text-right font-bold text-amber-600">{r.cards_earned}</TableCell>
+                      <TableCell className="text-right font-bold text-amber-600">
+                        {r.cards_earned}
+                        {r.expected_cards !== r.cards_earned && (
+                          <span
+                            className="ml-1 text-amber-600 cursor-help"
+                            title={`依前月能量 ${r.prev_energy} 推算，本月應新增 ${r.expected_cards} 張；系統目前記錄 ${r.cards_earned} 張（可能是舊規則算的，重新匯入該月報表即可更新）`}
+                          >⚠</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right text-muted-foreground">
+                        {r.prev_energy}
+                        {r.prev_source === "derived" && <span className="ml-1 text-[10px] text-gray-400">推算</span>}
+                        {r.prev_source === "earlier" && (
+                          <span className="ml-1 text-[10px] text-gray-400">取自{r.prev_ym}</span>
+                        )}
+                        {r.prev_source === "prev_month" && r.prev_energy !== r.derived_prev && (
+                          <span
+                            className="ml-1 text-amber-600 cursor-help"
+                            title={`前月報表累積為 ${r.prev_energy}，但「目前累積 − 本月」= ${r.derived_prev}，兩者不同，請核對是否有漏報或報表調整`}
+                          >⚠</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-right">{r.energy_added}</TableCell>
                       <TableCell className="text-right text-muted-foreground">{r.total_energy_snapshot}</TableCell>
                       <TableCell className="text-right">{r.cards_earned * POINTS_PER_CARD}</TableCell>

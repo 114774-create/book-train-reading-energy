@@ -15,6 +15,7 @@ import * as XLSX from "xlsx";
 import { ThemeEventsTab } from "./ThemeEventsTab";
 import { StudentEnergyTab } from "@/components/admin/StudentEnergyTab";
 import { IssueHonorCardsPanel } from "@/components/admin/IssueHonorCardsPanel";
+import { ImportHistoryCard } from "@/components/admin/ImportHistoryCard";
 import { LotteryManagementTab } from "@/components/admin/LotteryManagementTab";
 // ★ 新增：前端 PDF 解析套件
 import * as pdfjsLib from "pdfjs-dist";
@@ -818,50 +819,7 @@ export default function AdminDashboard() {
             </CardContent>
           </Card>
 
-          <Card className="mt-4">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">📋 已上傳月份歷史紀錄</CardTitle>
-              <CardDescription>同月份重複匯入會自動覆蓋原資料；此清單會持續保留，與登入狀態無關</CardDescription>
-            </CardHeader>
-            <CardContent>
-              {importHistory.length === 0 ? (
-                <div className="text-center py-8 text-muted-foreground text-sm">
-                  尚未匯入過任何月份報表
-                </div>
-              ) : (
-                <div className="overflow-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>年月</TableHead>
-                        <TableHead className="text-right">處理筆數</TableHead>
-                        <TableHead className="text-right">未找到學生</TableHead>
-                        <TableHead>匯入時間</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {[...importHistory]
-                        .sort((a, b) => b.ym.localeCompare(a.ym))
-                        .map((h) => (
-                        <TableRow key={h.ym}>
-                          <TableCell className="font-mono font-medium">{h.ym}</TableCell>
-                          <TableCell className="text-right font-medium">{h.processed}</TableCell>
-                          <TableCell className="text-right">
-                            {h.not_found > 0 ? (
-                              <span className="text-red-600 font-medium">{h.not_found}</span>
-                            ) : (
-                              <span className="text-green-600">0 ✓</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{h.at}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <ImportHistoryCard rows={importHistory} />
 
           <div className="mt-4">
             <IssueHonorCardsPanel />
